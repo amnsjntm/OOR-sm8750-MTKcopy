@@ -2,7 +2,7 @@ name: 6.6.118 欧加真OKI内核快速构建
 
 env:
   TZ: Asia/Shanghai
-  ANDROID_VERSION: 'android15'
+  ANDROID_VERSION: 'android16'
   KERNEL_VERSION: '6.6'
   SUB_VERSION: '118'
   KERNEL_NAME: 'android15-8-g29d86c5fc9dd-abogki428889875-4k'
@@ -100,7 +100,7 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       ksuver: ${{ steps.ksu_version.outputs.ksuver }}
       ak3name: ${{ steps.create_zip.outputs.ak3name }}
