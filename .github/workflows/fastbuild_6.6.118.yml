@@ -295,6 +295,8 @@ jobs:
           if [[ ${{ github.event.inputs.ksu_type }} != "none" ]]; then
             echo "正在添加susfs补丁..."
             git clone --depth=1 https://github.com/cctv18/susfs4oki.git susfs4ksu -b oki-${{ env.ANDROID_VERSION }}-${{ env.KERNEL_VERSION }}
+            # KowSU 线锁 susfs v2.4.0（selinux_hide 重构已无 lsm_hook 残留；BakaSU 线仍用 32ff29a）
+            cd susfs4ksu && git checkout -q c7f303f504b36d25b9a2e753edde7cd927f47e4f && cd ..
             wget https://github.com/$GITHUB_REPOSITORY/raw/refs/heads/$GITHUB_REF_NAME/other_patch/69_hide_stuff.patch -O ./common/69_hide_stuff.patch
             cp ./susfs4ksu/kernel_patches/50_add_susfs_in_gki-${{ env.ANDROID_VERSION }}-${{ env.KERNEL_VERSION }}.patch ./common/
             cp ./susfs4ksu/kernel_patches/fs/* ./common/fs/
@@ -308,9 +310,9 @@ jobs:
             # KowSU setup.sh 将驱动装在 drivers/kernelsu/，补丁的 kernel/ 前缀需用 --directory 映射
             patch -p1 -F 3 --directory=../common/drivers/kernelsu < 10_enable_susfs_for_ksu.patch || true
             cd ../common
-            # susfs-KowSU 类型冲突后处理（python 脚本，含校验）
-            wget -q https://github.com/$GITHUB_REPOSITORY/raw/refs/heads/$GITHUB_REF_NAME/other_patch/fix_sucompat_kowsu.py -O fix_sucompat.py
-            python3 fix_sucompat.py
+            # susfs-KowSU 类型冲突后处理（v6：bridge 旧签名回落 + sucompat/supercall 终态替换 + 残留 fail-fast）
+            wget -q https://github.com/$GITHUB_REPOSITORY/raw/refs/heads/$GITHUB_REF_NAME/other_patch/fix_bridge_kowsu_v6.py -O fix_bridge_kowsu_v6.py
+            python3 fix_bridge_kowsu_v6.py
             cd ../../
           else
             echo "已选择无内置KernelSU模式，跳过susfs配置..."
