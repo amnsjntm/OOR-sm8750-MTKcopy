@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-# KowSU + susfs4oki 类型冲突后处理 v4（完整版：sucompat.c/h + syscall_event_bridge.c）
-import sys, os, glob
+# KowSU + susfs4oki 类型冲突后处理 v5（bridge按行精确处理）
+import sys, os, glob, re
 
 def find_file(rel_candidates, name):
     for c in rel_candidates:
@@ -39,7 +39,7 @@ src = src.replace(
     "struct user_arg_ptr uap = *(struct user_arg_ptr *)argv_user; argv = (const char __user *const *)&uap;")
 open(p, "w").write(src)
 
-# ── sucompat.h: extern bool → extern static_key ──
+# ── sucompat.h ──
 h = os.path.join(base, "sucompat.h")
 if os.path.isfile(h):
     ht = open(h).read()
@@ -50,32 +50,35 @@ if os.path.isfile(h):
         open(h, "w").write(ht2)
         print("patched:", h)
 
-# ── syscall_event_bridge.c: bool 读取 → static_key 读取 ──
+# ── syscall_event_bridge.c：逐行处理（避免子串重复替换）──
 b = find_file([
     "../KernelSU/hook/syscall_event_bridge.c",
     "hook/syscall_event_bridge.c",
     "../common/drivers/kernelsu/hook/syscall_event_bridge.c",
 ], "syscall_event_bridge.c")
 if b:
-    bt = open(b).read()
-    bt2 = bt.replace(
-        "!ksu_su_compat_enabled",
-        "!static_key_enabled(&ksu_su_compat_enabled)")
-    bt2 = bt2.replace(
-        "ksu_su_compat_enabled)",
-        "static_key_enabled(&ksu_su_compat_enabled))")
-    if bt2 != bt:
-        open(b, "w").write(bt2)
-        print("patched:", b)
+    bl = open(b).read().split("\n")
+    out = []
+    for line in bl:
+        # bool 读取（53/61行）：if (!ksu_su_compat_enabled)
+        line = re.sub(r"if \(!ksu_su_compat_enabled\)", "if (!static_key_enabled(&ksu_su_compat_enabled))", line)
+        # else if 读取（111行）：else if (ksu_su_compat_enabled)
+        line = re.sub(r"else if \(ksu_su_compat_enabled\)", "else if (static_key_enabled(&ksu_su_compat_enabled))", line)
+        out.append(line)
+    open(b, "w").write("\n".join(out))
+    print("patched:", b)
 
 # ── 校验 ──
 ok = True
 for f in [p, b]:
     if f and os.path.isfile(f):
         t = open(f).read()
-        if "bool ksu_su_compat_enabled" in t or "extern bool ksu_su_compat_enabled" in t:
-            print("FATAL: bool ksu_su_compat_enabled residue in", f)
-            ok = False
+        # 找裸的 bool 引用（不含 static_key_enabled 包装）
+        for mm in re.finditer(r"ksu_su_compat_enabled", t):
+            ctx = t[max(0, mm.start()-40):mm.end()+40]
+            if "static_key_enabled" not in ctx and "DEFINE_STATIC_KEY_TRUE" not in ctx and "extern struct" not in ctx and "static_branch" not in ctx:
+                print("FATAL: unconverted ksu_su_compat_enabled in", f, ":", ctx.replace("\n", " "))
+                ok = False
 if ok:
     print("verification passed")
 else:
