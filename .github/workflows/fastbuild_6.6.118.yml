@@ -253,12 +253,10 @@ jobs:
           # 进入内核工作目录
           cd kernel_workspace
           if [[ ${{ github.event.inputs.ksu_type }} == "sukisu" || ${{ github.event.inputs.ksu_type }} == "bakasu" ]]; then
-            echo "正在配置BakaSU（KowSU+susfs4oki 组合暂无稳定先例，回退到已实测无检测点的 BakaSU 35252 锁定线）..."
-            curl -LSs "https://raw.githubusercontent.com/Baka-SU/BakaSU/refs/heads/main/kernel/setup.sh" | bash -s main
+            echo "正在配置KowSU（实验分支：对齐A2的KowSU+susfs2.4.0组合）..."
+            curl -LSs "https://raw.githubusercontent.com/KOWX712/KernelSU/master/kernel/setup.sh" | bash -s master
             echo 'CONFIG_KSU_FULL_NAME_FORMAT="%TAG_NAME%-%COMMIT_SHA%@cctv18"' >> ./common/arch/arm64/configs/gki_defconfig
             cd ./KernelSU
-            # 锁定 2026-10-24 的 commit（35252），hunter 检测点已实测消失的组合
-            git checkout -q d5e9e025b8b49155f8014684d64c91742b465f65
             KSU_VERSION=$(expr $(git rev-list --count HEAD) + 30700 2>/dev/null || echo 114514)
             # 存储版本号到 GitHub 环境变量
             echo "KSUVER=$KSU_VERSION" >> $GITHUB_ENV
@@ -296,8 +294,7 @@ jobs:
           cd kernel_workspace
           if [[ ${{ github.event.inputs.ksu_type }} != "none" ]]; then
             echo "正在添加susfs补丁..."
-            git clone https://github.com/cctv18/susfs4oki.git susfs4ksu -b oki-${{ env.ANDROID_VERSION }}-${{ env.KERNEL_VERSION }}
-            cd susfs4ksu && git checkout -q 32ff29a2bbf6 && cd ..
+            git clone --depth=1 https://github.com/cctv18/susfs4oki.git susfs4ksu -b oki-${{ env.ANDROID_VERSION }}-${{ env.KERNEL_VERSION }}
             wget https://github.com/$GITHUB_REPOSITORY/raw/refs/heads/$GITHUB_REF_NAME/other_patch/69_hide_stuff.patch -O ./common/69_hide_stuff.patch
             cp ./susfs4ksu/kernel_patches/50_add_susfs_in_gki-${{ env.ANDROID_VERSION }}-${{ env.KERNEL_VERSION }}.patch ./common/
             cp ./susfs4ksu/kernel_patches/fs/* ./common/fs/
@@ -305,6 +302,11 @@ jobs:
             cd ./common
             patch -p1 -F 3 < 50_add_susfs_in_gki-${{ env.ANDROID_VERSION }}-${{ env.KERNEL_VERSION }}.patch || true
             patch -p1 -N -F 3 < 69_hide_stuff.patch || true
+            # KowSU 驱动不带 susfs 集成，应用 susfs4oki 的 KSU 侧补丁（10_enable）
+            cp ../susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch ../KernelSU/
+            cd ../KernelSU
+            patch -p1 -F 3 < 10_enable_susfs_for_ksu.patch || true
+            cd ../common
             patch -p1 -F 3 < 10_enable_susfs_for_ksu.patch || true
             cd ../common
             cd ..
@@ -365,6 +367,7 @@ jobs:
           echo "CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y" >> ./common/arch/arm64/configs/gki_defconfig
           echo "CONFIG_KSU_SUSFS_OPEN_REDIRECT=y" >> ./common/arch/arm64/configs/gki_defconfig
           echo "CONFIG_KSU_SUSFS_SUS_MAP=y" >> ./common/arch/arm64/configs/gki_defconfig
+            echo "CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER=y" >> ./common/arch/arm64/configs/gki_defconfig
           
       - name: 添加 KSU & 其他配置项
         run: |
