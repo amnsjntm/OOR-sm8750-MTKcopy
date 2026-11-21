@@ -427,6 +427,10 @@ jobs:
           #启用 IPv6 网络地址转换
           echo "CONFIG_IP6_NF_NAT=y" >> ./common/arch/arm64/configs/gki_defconfig
           echo "CONFIG_IP6_NF_TARGET_MASQUERADE=y" >> ./common/arch/arm64/configs/gki_defconfig
+          # B5: FQ-CoDel 默认 qdisc + ECN + 移动网络 TCP 路径调优
+          echo "CONFIG_NET_SCH_FQ_CODEL=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_NET_SCH_FQ=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_TCP_MD5SIG=y" >> ./common/arch/arm64/configs/gki_defconfig
           #由于部分机型的vintf兼容性检测规则，在开启CONFIG_IP6_NF_NAT后开机会出现"您的设备内部出现了问题。请联系您的设备制造商了解详情。"的提示，故添加一个配置修复补丁，在编译内核时隐藏CONFIG_IP6_NF_NAT=y但不影响对应功能编译
           cd common
           wget https://github.com/$GITHUB_REPOSITORY/raw/refs/heads/$GITHUB_REF_NAME/other_patch/config.patch
@@ -678,6 +682,23 @@ jobs:
           cp ../common/out/arch/arm64/boot/Image ./Image
           # 拷贝本内核编译的 zram.ko（修复 zram_adaptive 模块里 5.15 跨版本坏 ko）
           cp ../common/out/drivers/block/zram/zram.ko ./zram.ko
+          # 向 anykernel.sh 注入 zram.ko 自动替换逻辑（修复 zram_adaptive 的 5.15 坏 ko）
+          cat >> ./anykernel.sh << 'ZREOF'
+
+## zram.ko auto-replace (fix zram_adaptive 5.15 cross-version ko)
+if [ -f "$AKHOME/zram.ko" ]; then
+    ZM=/data/adb/modules/zram_adaptive
+    if [ -d "$ZM" ]; then
+        ui_print "[-] Replacing zram_adaptive zram.ko (5.15 -> bundled)"
+        cp -f $ZM/zram.ko $ZM/zram.ko.bak.5.15
+        cp -f $AKHOME/zram.ko $ZM/zram.ko
+        chmod 644 $ZM/zram.ko
+        ui_print "[+] zram.ko replaced, takes effect after reboot"
+    else
+        ui_print "[i] zram_adaptive not installed, skipping"
+    fi
+fi
+ZREOF
           if [[ ! -f ./Image ]]; then
             echo "未找到内核镜像文件，构建可能出错"
             exit 1
