@@ -174,8 +174,10 @@ CANON_SU = r'''#include <linux/compiler_types.h>
 #include "ksu.h"
 #include "util.h"
 
-static const char sh_path[] = SH_PATH;
-static const char su_path[] = SU_PATH;
+#define SU_PATH "/system/bin/su"
+#define SH_PATH "/system/bin/sh"
+static const char sh_path[] = "/system/bin/sh";
+static const char su_path[] = "/system/bin/su";
 static const char ksud_path[] = KSUD_PATH;
 
 DEFINE_STATIC_KEY_TRUE(ksu_su_compat_enabled);
