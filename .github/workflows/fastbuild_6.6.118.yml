@@ -392,6 +392,9 @@ jobs:
           cd common
           wget https://github.com/$GITHUB_REPOSITORY/raw/refs/heads/$GITHUB_REF_NAME/other_patch/cve-2026-43499-rtmutex-6.6.patch
           patch -p1 -F 3 < cve-2026-43499-rtmutex-6.6.patch
+          # 应用 Unicode 零宽字符任意文件读取漏洞修复补丁（utf8 ignorable codepoint）
+          wget https://github.com/$GITHUB_REPOSITORY/raw/refs/heads/$GITHUB_REF_NAME/other_patch/unicode_bypass_fix.patch
+          patch -p1 -F 3 < unicode_bypass_fix.patch
           
       - name: 启用网络功能增强优化配置
         if: inputs.better_net
