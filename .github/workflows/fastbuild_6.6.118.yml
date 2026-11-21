@@ -305,15 +305,15 @@ jobs:
             # KowSU 驱动不带 susfs 集成，应用 susfs4oki 的 KSU 侧补丁（10_enable）
             cp ../susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch ../KernelSU/
             cd ../KernelSU
-            patch -p1 -F 3 < 10_enable_susfs_for_ksu.patch || true
+            # KowSU setup.sh 将驱动装在 drivers/kernelsu/，补丁的 kernel/ 前缀需用 --directory 映射
+            patch -p1 -F 3 --directory=../common/drivers/kernelsu < 10_enable_susfs_for_ksu.patch || true
+            cd ../common
             # susfs-KowSU 类型冲突后处理：sucompat.c 的 bool/static_key 与 user_arg_ptr 指针对齐
-            SUC=feature/sucompat.c
+            SUC=drivers/kernelsu/feature/sucompat.c
             grep -q "DEFINE_STATIC_KEY_TRUE(ksu_su_compat_enabled)" "$SUC" && sed -i '/^bool ksu_su_compat_enabled __read_mostly = true;/d' "$SUC" || true
             sed -i 's/\*value = ksu_su_compat_enabled ? 1 : 0;/*value = static_key_enabled(&ksu_su_compat_enabled) ? 1 : 0;/' "$SUC" || true
             sed -i 's/ksu_su_compat_enabled = enable;/{ if (enable) static_branch_enable(\&ksu_su_compat_enabled); else static_branch_disable(\&ksu_su_compat_enabled); }/' "$SUC" || true
             sed -i 's/argv = (const char __user \*const \*)argv_user;/{ struct user_arg_ptr uap = *(struct user_arg_ptr *)argv_user; argv = (const char __user *const *)\&uap; }/' "$SUC" || true
-            cd ../common
-            patch -p1 -F 3 < 10_enable_susfs_for_ksu.patch || true
             cd ../common
             cd ..
           else
