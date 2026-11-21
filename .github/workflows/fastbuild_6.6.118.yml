@@ -308,7 +308,7 @@ jobs:
             cp ../susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch ../KernelSU/
             cd ../KernelSU
             # KowSU setup.sh 将驱动装在 drivers/kernelsu/，补丁的 kernel/ 前缀需用 --directory 映射
-            patch -p1 -F 3 --directory=../common/drivers/kernelsu < 10_enable_susfs_for_ksu.patch || true
+            patch -p2 -F 3 --directory=../common/drivers/kernelsu < 10_enable_susfs_for_ksu.patch || true
             cd ../common
             # susfs-KowSU 类型冲突后处理（v6：bridge 旧签名回落 + sucompat/supercall 终态替换 + 残留 fail-fast）
             wget -q https://github.com/$GITHUB_REPOSITORY/raw/refs/heads/$GITHUB_REF_NAME/other_patch/fix_bridge_kowsu_v6.py -O fix_bridge_kowsu_v6.py
