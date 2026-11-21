@@ -676,6 +676,8 @@ jobs:
           rm -rf ./AnyKernel3/.git
           cd AnyKernel3
           cp ../common/out/arch/arm64/boot/Image ./Image
+# 拷贝内核编译产物 zram.ko，供 zram 模块修复跨版本 insmod 问题
+find ../common/out -name "zram.ko" -path "*zram*" -exec cp {} ./zram.ko \; || true
           if [[ ! -f ./Image ]]; then
             echo "未找到内核镜像文件，构建可能出错"
             exit 1
