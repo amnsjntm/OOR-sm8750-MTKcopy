@@ -742,14 +742,28 @@ def main():
     if ksu is None:
         die("cannot locate kernelsu driver dir (looked for core/init.c + feature/sucompat.c)")
     print("kernelsu dir:", ksu)
-    root = ksu.parent.parent
-    try:
-        if not ((root / "Makefile").is_file() and "KERNELRELEASE" in read(root / "Makefile")[:4000]):
-            root = None
-    except OSError:
-        root = None
+    root = None
+    seen = set()
+    for cand in [ksu.parent.parent, ksu.parent.parent.parent, Path.cwd(), Path.cwd().parent,
+                 Path.cwd() / "common", Path.cwd().parent / "common", ksu.parent.parent.parent / "common",
+                 ksu.parent.parent.parent.parent / "common"]:
+        try:
+            rc = cand.resolve()
+        except OSError:
+            continue
+        if rc in seen or not rc.is_dir():
+            continue
+        seen.add(rc)
+        try:
+            if (rc / "Makefile").is_file() and "KERNELRELEASE" in read(rc / "Makefile")[:4000] and (rc / "fs").is_dir():
+                root = rc
+                break
+        except OSError:
+            continue
     if root is None:
         print("NOTE: kernel root not found beside driver dir; F4/V8/V9 skipped")
+    else:
+        print("kernel root:", root)
 
     log = []
 
