@@ -304,10 +304,10 @@ jobs:
             patch -p1 -F 3 < 50_add_susfs_in_gki-${{ env.ANDROID_VERSION }}-${{ env.KERNEL_VERSION }}.patch || true
             patch -p1 -N -F 3 < 69_hide_stuff.patch || true
             # KowSU 驱动不带 susfs 集成，应用 susfs4oki 的 KSU 侧补丁（10_enable）
-            cp ./susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch ./KernelSU/
-            cd ./KernelSU
+            cp ../susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch ../KernelSU/
+            cd ../KernelSU
             patch -p1 -F 3 < 10_enable_susfs_for_ksu.patch || true
-            cd ..
+            cd ../common
             cd ..
           else
             echo "已选择无内置KernelSU模式，跳过susfs配置..."
