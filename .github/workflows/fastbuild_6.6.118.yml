@@ -257,9 +257,7 @@ jobs:
             curl -LSs "https://raw.githubusercontent.com/KOWX712/KernelSU/master/kernel/setup.sh" | bash -s master
             echo 'CONFIG_KSU_FULL_NAME_FORMAT="%TAG_NAME%-%COMMIT_SHA%@cctv18"' >> ./common/arch/arm64/configs/gki_defconfig
             cd ./KernelSU
-            # 锁定 v3.3.0（932014ab5b），对齐 A2 包（35833）同代驱动
-            git checkout -q 932014ab5b
-            # KowSU 版本号口径
+            # 跟随 master 最新（A2 同款新 lsm_hook 实现，符号不可见）
             KSU_VERSION=$(expr $(git rev-list --count HEAD) + 30700 2>/dev/null || echo 114514)
             # 存储版本号到 GitHub 环境变量
             echo "KSUVER=$KSU_VERSION" >> $GITHUB_ENV
