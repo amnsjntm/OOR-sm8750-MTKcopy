@@ -727,15 +727,15 @@ jobs:
             KSU_TYPENAME="BakaSU"
           elif [[ ${{ github.event.inputs.ksu_type }} == "ksunext" ]]; then
             KSU_TYPENAME="KSUNext"
-          fi
-          # 实验分支 bakasu/sukisu 实际构建 KowSU（见「添加KernelSU」步骤）——包名/日志对齐
-          if [[ "$GITHUB_REF_NAME" != "main" && ( "${{ github.event.inputs.ksu_type }}" == "sukisu" || "${{ github.event.inputs.ksu_type }}" == "bakasu" ) ]]; then
-            KSU_TYPENAME="KowSU"
-          fi
-          if [[ "${{ github.event.inputs.ksu_type }}" == "ksu" ]]; then
+          elif [[ ${{ github.event.inputs.ksu_type }} == "ksu" ]]; then
             KSU_TYPENAME="KSU"
           else
             KSU_TYPENAME="无内置KSU"
+          fi
+          # 实验分支 bakasu/sukisu 实际构建 KowSU（见「添加KernelSU」步骤）——包名/日志对齐
+          # （必须放在整条判定链闭合之后：否则 else 分支会把它覆盖回"无内置KSU"，run 45002432750 教训）
+          if [[ "$GITHUB_REF_NAME" != "main" && ( "${{ github.event.inputs.ksu_type }}" == "sukisu" || "${{ github.event.inputs.ksu_type }}" == "bakasu" ) ]]; then
+            KSU_TYPENAME="KowSU"
           fi
           if [[ "${{ github.event.inputs.lz4kd_enable }}" == "true" ]]; then
             wget https://raw.githubusercontent.com/$GITHUB_REPOSITORY/refs/heads/$GITHUB_REF_NAME/zram.zip
