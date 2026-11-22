@@ -324,6 +324,18 @@ jobs:
             cd ./KernelSU
             patch -p1 -F 3 < 10_enable_susfs_for_ksu.patch || true
           fi
+      
+      - name: 应用多管理器识别 CANON（stage2）
+        if: github.event.inputs.ksu_type != 'none'
+        run: |
+          cd kernel_workspace/common/drivers/kernelsu/manager
+          echo "正在替换多管理器识别 CANON 文件（stage2: 三签名 + 多包名）..."
+          wget -q https://github.com/$GITHUB_REPOSITORY/raw/refs/heads/$GITHUB_REF_NAME/other_patch/manager_apk_sign_stage2.c -O apk_sign.c
+          wget -q https://github.com/$GITHUB_REPOSITORY/raw/refs/heads/$GITHUB_REF_NAME/other_patch/manager_throne_tracker_stage2.c -O throne_tracker.c
+          # fail-fast 残留校验：CANON 标记缺失即终止
+          grep -q "stage2: multi-manager signature table" apk_sign.c || { echo "FATAL: apk_sign.c CANON 未生效"; exit 1; }
+          grep -q "com.resukisu.resukisu" throne_tracker.c || { echo "FATAL: throne_tracker.c CANON 未生效"; exit 1; }
+          echo "CANON 替换完成并校验通过"
 
       - name: 应用lz4 1.10.0 & zstd 1.5.7补丁
         if: inputs.lz4_enable
@@ -860,6 +872,8 @@ jobs:
           echo "SUPPORT_DEVICES=${{ env.SUPPORT_DEVICES }}" >> $GITHUB_ENV
           echo "BRAND_TAG=${{ env.BRAND_TAG }}" >> $GITHUB_ENV
           echo "AK3_NAME=${{ needs.build.outputs.ak3name }}" >> $GITHUB_ENV
+          # 实验分支发布一律 pre-release
+          echo "PRERELEASE_FLAG=--prerelease" >> $GITHUB_ENV
 
       - name: 创建发布
         id: create_release
@@ -868,6 +882,7 @@ jobs:
         run: |
           cat << 'EOF' > release_notes.md
           ### 📱 ${{ env.SUPPORT_DEVICES }} | ${{ env.KSU_TYPENAME }} 通用内核
+          > 发布渠道：实验分支 pre-release（新代码/功能验证中，正式版仅从 main 发布）
 
           ## 📦 本次发布刷机包
           > **文件名**：`${{ env.AK3_NAME }}`
@@ -911,5 +926,6 @@ jobs:
           gh release create "${{ env.TAG_HEAD }}-${{ env.BRAND_TAG }}-${{ env.TIME }}" \
             --repo "${{ github.repository }}" \
             --title "${{ env.TAG_HEAD }}-${{ env.AK3_NAME }}" \
+            $PRERELEASE_FLAG \
             --notes-file release_notes.md \
             release_zips/*.zip
