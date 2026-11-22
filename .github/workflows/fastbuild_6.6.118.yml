@@ -392,6 +392,9 @@ jobs:
             echo "CONFIG_CRYPTO_LZ4K=y" >> ./common/arch/arm64/configs/gki_defconfig
             echo "CONFIG_CRYPTO_LZ4KD=y" >> ./common/arch/arm64/configs/gki_defconfig
             echo "CONFIG_CRYPTO_842=y" >> ./common/arch/arm64/configs/gki_defconfig
+            # lz4kd.patch 会把 zram 默认压缩器 choice 改成 LZ4KD——显式钉回 LZ4（保守默认），
+            # lz4k/lz4kd 仅注册为可选算法（run 45002432750 黑屏嫌疑：默认 lz4kd + oplus 用户态 ABI 不齐 → zram0 初始化即崩）
+            echo "CONFIG_ZRAM_DEF_COMP_LZ4=y" >> ./common/arch/arm64/configs/gki_defconfig
           fi
           # 开启O2编译优化配置
           echo "CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE=y" >> ./common/arch/arm64/configs/gki_defconfig
@@ -691,9 +694,9 @@ jobs:
           cp ../common/out/arch/arm64/boot/Image ./Image
           # 拷贝本内核编译的 zram.ko 进包（供 zram_adaptive 等外部方案按需取用；不再自动替换）
           cp ../common/out/drivers/block/zram/zram.ko ./zram.ko
-          # 追加 zram_lkm 模块安装逻辑（与 zram.zip/kpn.zip 的 ksud 安装同构；镜像检查先行）
-          # 注意：zram.zip(zram_adaptive) 与 zram_lkm.zip(zram-lkm) 功能重叠（前者=直替 zram.ko+开机切换，
-          # 后者=KMI 算法模块零内核改动），双装会 rmmod/insmod 打架——安装时检测互斥
+          # 追加 zram_lkm 模块安装逻辑（与 kpn.zip 的 ksud 安装同构；镜像检查先行）
+          # 注：zram_adaptive(zram.zip) 已从包内移除（run 45002432750 教训：先装后测=检测恒真 + 双 zram 管理源打架）
+          # zram-lkm 只 insmod 算法模块不碰 zram 设备，与内核内置 LZ4KD 共存安全
           if [ -f ./Image ]; then
             {
               echo ""
@@ -701,16 +704,10 @@ jobs:
               echo "    MODULE_PATH=\"\$AKHOME/zram_lkm.zip\""
               echo "    KSUD_PATH=\"/data/adb/ksud\""
               echo "    if [ -f \"\$KSUD_PATH\" ]; then"
-              echo "        if [ -d \"/data/adb/modules/zram_adaptive\" ]; then"
-              echo "            ui_print \"[!] 检测到 zram_adaptive 模块已安装，与 ZRAM-LKM 功能重叠\""
-              echo "            ui_print \"[!] 二选一: 卸载 zram_adaptive 后重启再刷, 或跳过本模块\""
-              echo "            ui_print \"[i] 本模块未安装 (避免 rmmod/insmod 冲突)\""
-              echo "        else"
-              echo "            ui_print \"Installing ZRAM-LKM Module (lz4k/lz4kd/lz4k_oplus algo modules, v0.1.6)...\""
-              echo "            /data/adb/ksud module install \"\$MODULE_PATH\""
-              echo "            ui_print \"[i] 默认只加载算法不切换; 手动切换: echo lz4kd > /sys/block/zram0/comp_algorithm\""
-              echo "            ui_print \"Installation Complete!\""
-              echo "        fi"
+              echo "        ui_print \"Installing ZRAM-LKM Module (lz4k/lz4kd/lz4k_oplus algo modules, v0.1.6)...\""
+              echo "        /data/adb/ksud module install \"\$MODULE_PATH\""
+              echo "        ui_print \"[i] 只加载算法不切换; 手动: echo lz4kd > /sys/block/zram0/comp_algorithm\""
+              echo "        ui_print \"Installation Complete!\""
               echo "    else"
               echo "        ui_print \"KSUD Not Found, skipping ZRAM-LKM installation...\""
               echo "    fi"
@@ -736,9 +733,6 @@ jobs:
           # （必须放在整条判定链闭合之后：否则 else 分支会把它覆盖回"无内置KSU"，run 45002432750 教训）
           if [[ "$GITHUB_REF_NAME" != "main" && ( "${{ github.event.inputs.ksu_type }}" == "sukisu" || "${{ github.event.inputs.ksu_type }}" == "bakasu" ) ]]; then
             KSU_TYPENAME="KowSU"
-          fi
-          if [[ "${{ github.event.inputs.lz4kd_enable }}" == "true" ]]; then
-            wget https://raw.githubusercontent.com/$GITHUB_REPOSITORY/refs/heads/$GITHUB_REF_NAME/zram.zip
           fi
           # zram-lkm 预编译模块（misaka5202/zram-lkm v0.1.6, KMI=android15-6.6, 修复 lz4k_oplus 解压越界等坏块）：
           # 与内核内 LZ4KD 补丁互补——内核补丁给 zram 注册 lz4k/lz4kd 算法；模块方案零内核改动、坏块修复随模块更新
@@ -797,7 +791,7 @@ jobs:
           echo "KPM: ${{ github.event.inputs.kpm_enable }}" >> ./ak3.log
           echo "LZ4: ${{ github.event.inputs.lz4_enable }}" >> ./ak3.log
           echo "LZ4KD: ${{ github.event.inputs.lz4kd_enable }}" >> ./ak3.log
-          echo "zram-lkm: bundled (v0.1.6 android15-6.6, KMI prebuilt)" >> ./ak3.log
+          echo "zram-lkm: bundled (v0.1.6 android15-6.6, KMI prebuilt); zram_adaptive removed" >> ./ak3.log
           echo "IPset: ${{ github.event.inputs.better_net }}" >> ./ak3.log
           echo "BBR&Brutal: ${{ github.event.inputs.bbr_enable }}" >> ./ak3.log
           echo "Droidspaces: ${{ github.event.inputs.droidspaces_enable }}" >> ./ak3.log
