@@ -254,7 +254,8 @@ jobs:
           cd kernel_workspace
           if [[ ${{ github.event.inputs.ksu_type }} == "sukisu" || ${{ github.event.inputs.ksu_type }} == "bakasu" ]]; then
             echo "正在配置KowSU（实验分支：对齐A2的KowSU+susfs2.4.0组合）..."
-            curl -LSs "https://raw.githubusercontent.com/KOWX712/KernelSU/master/kernel/setup.sh" | bash -s master
+            # 锁定亮机同源 commit（KowSU master HEAD，2026-11-21，2766 commits -> 33466 恒定）
+            curl -LSs "https://raw.githubusercontent.com/KOWX712/KernelSU/master/kernel/setup.sh" | bash -s 44758e199257bb973aa6ca5b3a393c1b21694408
             echo 'CONFIG_KSU_FULL_NAME_FORMAT="%TAG_NAME%-%COMMIT_SHA%@cctv18"' >> ./common/arch/arm64/configs/gki_defconfig
             cd ./KernelSU
             KSU_VERSION=$(expr $(git rev-list --count HEAD) + 30700 2>/dev/null || echo 114514)
@@ -313,9 +314,6 @@ jobs:
             # susfs-KowSU 类型冲突后处理（v6：bridge 旧签名回落 + sucompat/supercall 终态替换 + 残留 fail-fast）
             wget -q https://github.com/$GITHUB_REPOSITORY/raw/refs/heads/$GITHUB_REF_NAME/other_patch/fix_bridge_kowsu_v6.py -O fix_bridge_kowsu_v6.py
             python3 fix_bridge_kowsu_v6.py
-            # 管理器兼容：多签名识别（BakaSU/官方/KOWX712）+ 6 个扩展 ioctl（GET_FULL_VERSION 等）
-            wget -q https://github.com/$GITHUB_REPOSITORY/raw/refs/heads/$GITHUB_REF_NAME/other_patch/fix_manager_compat_kowsu.py -O fix_manager_compat_kowsu.py
-            python3 fix_manager_compat_kowsu.py
             cd ../../
           else
             echo "已选择无内置KernelSU模式，跳过susfs配置..."
@@ -712,10 +710,9 @@ jobs:
             echo "未找到内核镜像文件，构建可能出错"
             exit 1
           fi
-          if [[ ${{ github.event.inputs.ksu_type }} == "sukisu" ]]; then
-            KSU_TYPENAME="SukiSU"
-          elif [[ ${{ github.event.inputs.ksu_type }} == "bakasu" ]]; then
-            KSU_TYPENAME="BakaSU"
+          if [[ ${{ github.event.inputs.ksu_type }} == "sukisu" || ${{ github.event.inputs.ksu_type }} == "bakasu" ]]; then
+            # 实验分支：sukisu/bakasu 选项实际构建 KowSU，命名如实显示
+            KSU_TYPENAME="KowSU"
           elif [[ ${{ github.event.inputs.ksu_type }} == "ksunext" ]]; then
             KSU_TYPENAME="KSUNext"
           elif [[ ${{ github.event.inputs.ksu_type }} == "ksu" ]]; then
@@ -843,20 +840,14 @@ jobs:
           TAG_HEAD="OPPO-OPlus-Realme-build"
           echo "TAG_HEAD=$TAG_HEAD" >> $GITHUB_ENV
 
-          if [[ ${{ github.event.inputs.ksu_type }} == "sukisu" ]]; then
-            KSU_TYPENAME="SukiSU Ultra"
-          elif [[ ${{ github.event.inputs.ksu_type }} == "bakasu" ]]; then
-            KSU_TYPENAME="BakaSU"
+          if [[ ${{ github.event.inputs.ksu_type }} == "sukisu" || ${{ github.event.inputs.ksu_type }} == "bakasu" ]]; then
+            KSU_TYPENAME="KowSU"
           elif [[ ${{ github.event.inputs.ksu_type }} == "ksunext" ]]; then
             KSU_TYPENAME="KernelSU Next"
           elif [[ ${{ github.event.inputs.ksu_type }} == "ksu" ]]; then
             KSU_TYPENAME="KernelSU (Official)"
           else
             KSU_TYPENAME="无内置KSU"
-          fi
-          # 实验分支当前将 sukisu/bakasu 选项对接 KowSU 构建（见「添加KernelSU」步骤），发布命名对齐仓库现状
-          if [[ "$GITHUB_REF_NAME" != "main" && ( "${{ github.event.inputs.ksu_type }}" == "sukisu" || "${{ github.event.inputs.ksu_type }}" == "bakasu" ) ]]; then
-            KSU_TYPENAME="KowSU"
           fi
           echo "KSU_TYPENAME=$KSU_TYPENAME" >> $GITHUB_ENV
 
@@ -870,38 +861,6 @@ jobs:
           echo "BRAND_TAG=${{ env.BRAND_TAG }}" >> $GITHUB_ENV
           echo "AK3_NAME=${{ needs.build.outputs.ak3name }}" >> $GITHUB_ENV
 
-          # 分支定位：main=正式发布线（仅合入已确认可用的代码与功能，兼作检查点备份）；其余分支=实验测试线（release 一律划入 pre-release）
-          if [[ "$GITHUB_REF_NAME" == "main" ]]; then
-            echo "RELEASE_CHANNEL=正式版 | main 稳定线（仅包含已确认可用的代码与功能）" >> $GITHUB_ENV
-            echo "PRERELEASE_FLAG=" >> $GITHUB_ENV
-            {
-              echo "UPDATE_CONTENT<<NOTESEOF"
-              echo "- 更新 ${KSU_TYPENAME} 至最新版本（${{ needs.build.outputs.ksuver }}）"
-              echo "- (预留)"
-              echo "NOTESEOF"
-            } >> $GITHUB_ENV
-          else
-            echo "RELEASE_CHANNEL=测试版 Pre-release | 实验分支 ${GITHUB_REF_NAME}（新代码/功能验证与调试中，稳定性不保证；正式版仅从 main 分支发布）" >> $GITHUB_ENV
-            echo "PRERELEASE_FLAG=--prerelease" >> $GITHUB_ENV
-            if [[ "${{ github.event.inputs.ksu_type }}" == "sukisu" || "${{ github.event.inputs.ksu_type }}" == "bakasu" ]]; then
-              {
-                echo "UPDATE_CONTENT<<NOTESEOF"
-                echo "- KowSU 实验线：KowSU（master）+ susfs v2.4.0（锁定 c7f303f5）"
-                echo "- 管理器识别：移植 BakaSU / KernelSU 官方 / KOWX712 三签名白名单，三系管理器均可识别本内核"
-                echo "- 管理器兼容：新增 GET_FULL_VERSION / HOOK_TYPE / DYNAMIC_MANAGER / GET_MANAGERS / GET_KERNEL_PATCH_IMPLEMENT / MANAGE_TRY_UMOUNT 扩展 ioctl"
-                echo "- (预留)"
-                echo "NOTESEOF"
-              } >> $GITHUB_ENV
-            else
-              {
-                echo "UPDATE_CONTENT<<NOTESEOF"
-                echo "- 实验分支（${GITHUB_REF_NAME}）测试构建，功能组合验证中"
-                echo "- (预留)"
-                echo "NOTESEOF"
-              } >> $GITHUB_ENV
-            fi
-          fi
-
       - name: 创建发布
         id: create_release
         env:
@@ -909,8 +868,6 @@ jobs:
         run: |
           cat << 'EOF' > release_notes.md
           ### 📱 ${{ env.SUPPORT_DEVICES }} | ${{ env.KSU_TYPENAME }} 通用内核
-
-          > **发布渠道**：${{ env.RELEASE_CHANNEL }}
 
           ## 📦 本次发布刷机包
           > **文件名**：`${{ env.AK3_NAME }}`
@@ -937,7 +894,8 @@ jobs:
           - KSU 原版管理器下载：[KernelSU](https://github.com/tiann/KernelSU/releases)
 
           ### ⏫️ 更新内容：
-          ${{ env.UPDATE_CONTENT }}
+          - 更新 ${{ env.KSU_TYPENAME }} 至最新版本（${{ needs.build.outputs.ksuver }}）
+          - (预留)
 
           ### 📋 安装方法 | Installation Guide
           1. 若你的手机已经安装了第三方Recovery（如TWRP)，可下载对应机型的AnyKernel刷机包后进入Recovery模式，通过Recovery刷入刷机包后重启设备；
@@ -953,6 +911,5 @@ jobs:
           gh release create "${{ env.TAG_HEAD }}-${{ env.BRAND_TAG }}-${{ env.TIME }}" \
             --repo "${{ github.repository }}" \
             --title "${{ env.TAG_HEAD }}-${{ env.AK3_NAME }}" \
-            $PRERELEASE_FLAG \
             --notes-file release_notes.md \
             release_zips/*.zip
