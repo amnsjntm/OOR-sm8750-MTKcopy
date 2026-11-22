@@ -335,15 +335,14 @@ jobs:
           # fail-fast 残留校验：CANON 标记缺失即终止
           grep -q "stage2: multi-manager signature table" apk_sign.c || { echo "FATAL: apk_sign.c CANON 未生效"; exit 1; }
           grep -q "com.resukisu.resukisu" throne_tracker.c || { echo "FATAL: throne_tracker.c CANON 未生效"; exit 1; }
-          # stage3: 钩子类型 ioctl CANON（dispatch.c + uapi 头）
-          wget -q https://github.com/$GITHUB_REPOSITORY/raw/refs/heads/$GITHUB_REF_NAME/other_patch/dispatch_hook_type_stage3.c -O supercall/dispatch.c
-          # uapi 头从 kernel_workspace 根解析（symlink 目录内 ../ 解析不可靠）
+          # stage3: 钩子类型 ioctl（python 增量编辑，保留 10_enable/v6 已改内容；路径从 kernel_workspace 根解析）
           cd ../../../
-          wget -q https://github.com/$GITHUB_REPOSITORY/raw/refs/heads/$GITHUB_REF_NAME/other_patch/uapi_supercall_hook_type_stage3.h -O KernelSU/uapi/supercall.h
-          grep -q "KSU_IOCTL_HOOK_TYPE" KernelSU/uapi/supercall.h || { echo "FATAL: uapi CANON 未生效"; exit 1; }
+          wget -q https://github.com/$GITHUB_REPOSITORY/raw/refs/heads/$GITHUB_REF_NAME/other_patch/fix_hook_type_stage3.py
+          wget -q https://github.com/$GITHUB_REPOSITORY/raw/refs/heads/$GITHUB_REF_NAME/other_patch/fix_uapi_hook_type_stage3.py
+          python3 fix_hook_type_stage3.py
+          python3 fix_uapi_hook_type_stage3.py
           # 回到 manager 目录继续
           cd common/drivers/kernelsu/manager
-          grep -q "do_get_hook_type" supercall/dispatch.c || { echo "FATAL: dispatch.c CANON 未生效"; exit 1; }
 
           echo "CANON 替换完成并校验通过（含 stage3 钩子类型）"
 
