@@ -40,10 +40,10 @@ on:
         type: boolean
         default: 'true'
       lz4kd_enable:
-        description: '是否安装 LZ4KD 补丁(与lz4+zstd补丁可同开: 触碰文件无交集, zram 压缩算法多注册 lz4k/lz4kd 可选, 默认压缩器仍由所选算法决定)'
+        description: '是否安装 LZ4KD 补丁(若已开启lz4+zstd补丁则可不开启)'
         required: true
         type: boolean
-        default: 'true'
+        default: 'false'
       bbr_enable:
         description: "是否启用bbr算法(优化上行数据,对手机日用无太大意义甚至可能负优化;false关闭,true仅加入算法,default启用算法并设为默认)"
         required: true
@@ -66,7 +66,7 @@ on:
         description: '是否开启网络功能拓展配置(用于为ipset及需要iptables等高级网络功能内核支持的程序提供支持)'
         required: true
         type: boolean
-        default: 'true'
+        default: 'false'
       adios_enable:
         description: '是否启用ADIOS IO调度器支持(提升IO读写性能)'
         required: true
@@ -352,32 +352,8 @@ jobs:
           cp -r ../SukiSU_patch/other/zram/lz4k/include/linux/* ./include/linux/
           cp -r ../SukiSU_patch/other/zram/lz4k/lib/* ./lib
           cp -r ../SukiSU_patch/other/zram/lz4k/crypto/* ./crypto
-          # 用仓库 stripped 版 lz4kd 补丁（已剥离 kernel/module/main.c hunk——其自定义模块黑名单
-          # 会拒载 OEM oplus_bsp_zsmalloc.ko，run 45002432750/45005568950 两轮黑屏根因）
-          wget -q https://github.com/$GITHUB_REPOSITORY/raw/refs/heads/$GITHUB_REF_NAME/other_patch/lz4kd_66_stripped.patch -O lz4kd.patch
+          cp ../SukiSU_patch/other/zram/zram_patch/${{ env.KERNEL_VERSION }}/lz4kd.patch ./
           patch -p1 -F 3 < lz4kd.patch || true
-          # lz4k_oplus 实现层补全 + 坏块修复（misaka5202/zram-lkm v0.1.6）：SukiSU 目录缺 lib 实现，
-          # misaka 版带 out_end 目标容量检查（小字面量快路径越界 ~31B 修复）+ get_size NULL 守卫
-          # （CHANGELOG: lz4k_oplus 解压越界为攻击可达面）。实现文件落 lib/lz4k_oplus/，注册层走 lz4k_oplus.patch
-          mkdir -p ./lib/lz4k_oplus
-          cp ../SukiSU_patch/other/zram/lz4k_oplus/lz4k.c ./lib/lz4k_oplus/lz4k.c
-          cp ../SukiSU_patch/other/zram/lz4k_oplus/Kconfig ./lib/lz4k_oplus/Kconfig
-          cp ../SukiSU_patch/other/zram/lz4k_oplus/Makefile ./lib/lz4k_oplus/Makefile
-          wget -q https://raw.githubusercontent.com/misaka5202/zram-lkm/v0.1.6/extra/lz4k_oplus/lz4k.h -O ./lib/lz4k_oplus/lz4k.h
-          wget -q https://raw.githubusercontent.com/misaka5202/zram-lkm/v0.1.6/extra/lz4k_oplus/lz4k_compress.c -O ./lib/lz4k_oplus/lz4k_compress.c
-          wget -q https://raw.githubusercontent.com/misaka5202/zram-lkm/v0.1.6/extra/lz4k_oplus/lz4k_decompress.c -O ./lib/lz4k_oplus/lz4k_decompress.c
-          # 应用上游 lz4k_oplus.patch（lib/Kconfig 挂载+Makefile obj-y+zram Kconfig+depends+zcomp.c 算法名单）
-          cp ../SukiSU_patch/other/zram/zram_patch/6.6/lz4k_oplus.patch ./
-          patch -p1 -F 3 < lz4k_oplus.patch || true
-          # （crypto 层由 lib/lz4k_oplus/ 的 crypto_lz4k_oplus.o 承担：wrapper(lz4k.o)+compress+decompress 三合一模块，
-          #  MODULE_ALIAS_CRYPTO("lz4k_oplus") 在 wrapper 内注册，无需 crypto/ 顶层注册）
-          # 残留校验：main.c 必须未被改动（fail-fast）
-          # common 不是 git 仓库（zip 解包），直接 grep 文件本体验证（不依赖 git diff）
-          if grep -q "custom_module_blacklist" ../common/kernel/module/main.c 2>/dev/null; then
-            echo "[FATAL] main.c 黑名单残留——lz4kd 补丁版本错误"; exit 1
-          else
-            echo "[OK] kernel/module/main.c 无黑名单残留"
-          fi
           
       - name: 添加SUSFS 配置项
         if: inputs.susfs_enable
@@ -411,17 +387,11 @@ jobs:
           echo "CONFIG_TMPFS_XATTR=y" >> ./common/arch/arm64/configs/gki_defconfig
           echo "CONFIG_TMPFS_POSIX_ACL=y" >> ./common/arch/arm64/configs/gki_defconfig
           if [[ "${{ github.event.inputs.lz4kd_enable }}" == "true" ]]; then
-            # CONFIG_ZSMALLOC 保持 GKI 原生 =m 不覆盖：写 =y（内建）会与欧加真 vendor_dlkm 的
-            # oplus_bsp_zsmalloc.ko（OEM THP 变体）冲突（符号/CRC 不匹配拒载）→ OEM 内存管理链断 → 开机黑屏
-            # （run 45002432750/45005568950 两轮黑屏根因；能开机的 44999405910 zsmalloc=[M] 实锤差异）
+            echo "CONFIG_ZSMALLOC=y" >> ./common/arch/arm64/configs/gki_defconfig
             echo "CONFIG_CRYPTO_LZ4HC=y" >> ./common/arch/arm64/configs/gki_defconfig
             echo "CONFIG_CRYPTO_LZ4K=y" >> ./common/arch/arm64/configs/gki_defconfig
             echo "CONFIG_CRYPTO_LZ4KD=y" >> ./common/arch/arm64/configs/gki_defconfig
             echo "CONFIG_CRYPTO_842=y" >> ./common/arch/arm64/configs/gki_defconfig
-            echo "CONFIG_CRYPTO_LZ4K_OPLUS=y" >> ./common/arch/arm64/configs/gki_defconfig
-            # lz4kd.patch 会把 zram 默认压缩器 choice 改成 LZ4KD——显式钉回 LZ4（保守默认），
-            # lz4k/lz4kd 仅注册为可选算法（默认压缩器非黑屏根因，但保守默认更贴近原厂行为）
-            echo "CONFIG_ZRAM_DEF_COMP_LZ4=y" >> ./common/arch/arm64/configs/gki_defconfig
           fi
           # 开启O2编译优化配置
           echo "CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE=y" >> ./common/arch/arm64/configs/gki_defconfig
@@ -442,38 +412,36 @@ jobs:
         run: |
           cd kernel_workspace
           #启用  BPF 流解析器,实现高性能网络流量处理,增强网络监控和分析能力
-          # better_net 群全部 =m（模块态）：=y 内置会与欧加真 vendor_dlkm 网络模块符号/CRC 冲突致黑屏
-          # （run 45014314996 实锤：ipset 全家+xt_set+ip6table_nat 内置 → 一屏黑屏；与 ZSMALLOC 案同模式）
-          echo "CONFIG_BPF_STREAM_PARSER=m" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_BPF_STREAM_PARSER=y" >> ./common/arch/arm64/configs/gki_defconfig
           #开启增强 Netfilter 防火墙扩展模块,支持基于地址类型的匹配规则,启用 IP 集合支持,提高防火墙规则灵活性,支持更复杂的流量过滤策略
-          echo "CONFIG_NETFILTER_XT_MATCH_ADDRTYPE=m" >> ./common/arch/arm64/configs/gki_defconfig
-          echo "CONFIG_NETFILTER_XT_SET=m" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_NETFILTER_XT_MATCH_ADDRTYPE=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_NETFILTER_XT_SET=y" >> ./common/arch/arm64/configs/gki_defconfig
           #启用 IP 集框架及其多种数据结构实现,提供高效的大规模 IP 地址管理,提高防火墙规则处理效率,减少内存占用
-          echo "CONFIG_IP_SET=m" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_IP_SET=y" >> ./common/arch/arm64/configs/gki_defconfig
           echo "CONFIG_IP_SET_MAX=65534" >> ./common/arch/arm64/configs/gki_defconfig
-          echo "CONFIG_IP_SET_BITMAP_IP=m" >> ./common/arch/arm64/configs/gki_defconfig
-          echo "CONFIG_IP_SET_BITMAP_IPMAC=m" >> ./common/arch/arm64/configs/gki_defconfig
-          echo "CONFIG_IP_SET_BITMAP_PORT=m" >> ./common/arch/arm64/configs/gki_defconfig
-          echo "CONFIG_IP_SET_HASH_IP=m" >> ./common/arch/arm64/configs/gki_defconfig
-          echo "CONFIG_IP_SET_HASH_IPMARK=m" >> ./common/arch/arm64/configs/gki_defconfig
-          echo "CONFIG_IP_SET_HASH_IPPORT=m" >> ./common/arch/arm64/configs/gki_defconfig
-          echo "CONFIG_IP_SET_HASH_IPPORTIP=m" >> ./common/arch/arm64/configs/gki_defconfig
-          echo "CONFIG_IP_SET_HASH_IPPORTNET=m" >> ./common/arch/arm64/configs/gki_defconfig
-          echo "CONFIG_IP_SET_HASH_IPMAC=m" >> ./common/arch/arm64/configs/gki_defconfig
-          echo "CONFIG_IP_SET_HASH_MAC=m" >> ./common/arch/arm64/configs/gki_defconfig
-          echo "CONFIG_IP_SET_HASH_NETPORTNET=m" >> ./common/arch/arm64/configs/gki_defconfig
-          echo "CONFIG_IP_SET_HASH_NET=m" >> ./common/arch/arm64/configs/gki_defconfig
-          echo "CONFIG_IP_SET_HASH_NETNET=m" >> ./common/arch/arm64/configs/gki_defconfig
-          echo "CONFIG_IP_SET_HASH_NETPORT=m" >> ./common/arch/arm64/configs/gki_defconfig
-          echo "CONFIG_IP_SET_HASH_NETIFACE=m" >> ./common/arch/arm64/configs/gki_defconfig
-          echo "CONFIG_IP_SET_LIST_SET=m" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_IP_SET_BITMAP_IP=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_IP_SET_BITMAP_IPMAC=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_IP_SET_BITMAP_PORT=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_IP_SET_HASH_IP=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_IP_SET_HASH_IPMARK=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_IP_SET_HASH_IPPORT=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_IP_SET_HASH_IPPORTIP=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_IP_SET_HASH_IPPORTNET=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_IP_SET_HASH_IPMAC=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_IP_SET_HASH_MAC=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_IP_SET_HASH_NETPORTNET=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_IP_SET_HASH_NET=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_IP_SET_HASH_NETNET=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_IP_SET_HASH_NETPORT=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_IP_SET_HASH_NETIFACE=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_IP_SET_LIST_SET=y" >> ./common/arch/arm64/configs/gki_defconfig
           #启用 IPv6 网络地址转换
-          echo "CONFIG_IP6_NF_NAT=m" >> ./common/arch/arm64/configs/gki_defconfig
-          echo "CONFIG_IP6_NF_TARGET_MASQUERADE=m" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_IP6_NF_NAT=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_IP6_NF_TARGET_MASQUERADE=y" >> ./common/arch/arm64/configs/gki_defconfig
           # B5: FQ-CoDel 默认 qdisc + ECN + 移动网络 TCP 路径调优
-          echo "CONFIG_NET_SCH_FQ_CODEL=m" >> ./common/arch/arm64/configs/gki_defconfig
-          echo "CONFIG_NET_SCH_FQ=m" >> ./common/arch/arm64/configs/gki_defconfig
-          echo "CONFIG_TCP_MD5SIG=m" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_NET_SCH_FQ_CODEL=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_NET_SCH_FQ=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_TCP_MD5SIG=y" >> ./common/arch/arm64/configs/gki_defconfig
           #由于部分机型的vintf兼容性检测规则，在开启CONFIG_IP6_NF_NAT后开机会出现"您的设备内部出现了问题。请联系您的设备制造商了解详情。"的提示，故添加一个配置修复补丁，在编译内核时隐藏CONFIG_IP6_NF_NAT=y但不影响对应功能编译
           cd common
           wget https://github.com/$GITHUB_REPOSITORY/raw/refs/heads/$GITHUB_REF_NAME/other_patch/config.patch
@@ -541,7 +509,7 @@ jobs:
             echo "CONFIG_DEVTMPFS=y" >> ./arch/arm64/configs/gki_defconfig
             echo "CONFIG_NAMESPACES=y" >> ./arch/arm64/configs/gki_defconfig
             echo "CONFIG_POSIX_MQUEUE=y" >> ./arch/arm64/configs/gki_defconfig
-            echo "CONFIG_NETFILTER_XT_MATCH_ADDRTYPE=m" >> ./arch/arm64/configs/gki_defconfig
+            echo "CONFIG_NETFILTER_XT_MATCH_ADDRTYPE=y" >> ./arch/arm64/configs/gki_defconfig
             echo "CONFIG_NETFILTER_XT_TARGET_LOG=y" >> ./arch/arm64/configs/gki_defconfig
             echo "CONFIG_NETFILTER_XT_MATCH_RECENT=y" >> ./arch/arm64/configs/gki_defconfig
             # 未经测试的配置选项，可能导致bug
@@ -721,8 +689,25 @@ jobs:
           rm -rf ./AnyKernel3/.git
           cd AnyKernel3
           cp ../common/out/arch/arm64/boot/Image ./Image
-          # 拷贝本内核编译的 zram.ko 进包（供 zram_adaptive 等外部方案按需取用；不再自动替换）
+          # 拷贝本内核编译的 zram.ko（修复 zram_adaptive 模块里 5.15 跨版本坏 ko）
           cp ../common/out/drivers/block/zram/zram.ko ./zram.ko
+          # 向 anykernel.sh 注入 zram.ko 自动替换逻辑（修复 zram_adaptive 的 5.15 坏 ko）
+          # 向 anykernel.sh 追加 zram.ko 自动替换逻辑（printf 逐行，避免 heredoc 缩进问题）
+          {          echo ""
+          echo "## zram.ko auto-replace (fix zram_adaptive 5.15 cross-version ko)"
+          echo "if [ -f \"\$AKHOME/zram.ko\" ]; then"
+          echo "    ZM=/data/adb/modules/zram_adaptive"
+          echo "    if [ -d \"\$ZM\" ]; then"
+          echo "        ui_print \"[-] Replacing zram_adaptive zram.ko (5.15 -> bundled)\""
+          echo "        cp -f \$ZM/zram.ko \$ZM/zram.ko.bak.5.15"
+          echo "        cp -f \$AKHOME/zram.ko \$ZM/zram.ko"
+          echo "        chmod 644 \$ZM/zram.ko"
+          echo "        ui_print \"[+] zram.ko replaced, takes effect after reboot\""
+          echo "    else"
+          echo "        ui_print \"[i] zram_adaptive not installed, skipping\""
+          echo "    fi"
+          echo "fi"
+          } >> ./anykernel.sh
           if [[ ! -f ./Image ]]; then
             echo "未找到内核镜像文件，构建可能出错"
             exit 1
@@ -738,19 +723,8 @@ jobs:
           else
             KSU_TYPENAME="无内置KSU"
           fi
-          # 实验分支 bakasu/sukisu 实际构建 KowSU（见「添加KernelSU」步骤）——包名/日志对齐
-          # （必须放在整条判定链闭合之后：否则 else 分支会把它覆盖回"无内置KSU"，run 45002432750 教训）
-          if [[ "$GITHUB_REF_NAME" != "main" && ( "${{ github.event.inputs.ksu_type }}" == "sukisu" || "${{ github.event.inputs.ksu_type }}" == "bakasu" ) ]]; then
-            KSU_TYPENAME="KowSU"
-          fi
-          # zram_adaptive（上游原样路径）：切换/大小管理 action 菜单；打包时把其 5.15 旧 ko 替换为本内核编译版
           if [[ "${{ github.event.inputs.lz4kd_enable }}" == "true" ]]; then
-            wget https://raw.githubusercontent.com/$GITHUB_REPOSITORY/refs/heads/$GITHUB_REF_NAME/zram.zip -O ./zram.zip
-            # 用本内核编译的 zram.ko 替换包内 5.15 ko（vermagic 不匹配会被拒载 → zram0 消失 → 黑屏）
-            mkdir -p ./zram_zip_tmp && cd ./zram_zip_tmp
-            unzip -o -q ../zram.zip
-            cp -f ../zram.ko ./zram.ko
-            zip -q -r ../zram.zip.new . && cd .. && mv -f zram.zip.new zram.zip && rm -rf ./zram_zip_tmp
+            wget https://raw.githubusercontent.com/$GITHUB_REPOSITORY/refs/heads/$GITHUB_REF_NAME/zram.zip
           fi
           if [[ ${{ github.event.inputs.kpm_enable }} == 'true' ]]; then
             wget https://github.com/cctv18/KPatch-Next/releases/latest/download/kpn.zip
@@ -806,7 +780,6 @@ jobs:
           echo "KPM: ${{ github.event.inputs.kpm_enable }}" >> ./ak3.log
           echo "LZ4: ${{ github.event.inputs.lz4_enable }}" >> ./ak3.log
           echo "LZ4KD: ${{ github.event.inputs.lz4kd_enable }}" >> ./ak3.log
-          echo "lz4kd: in-tree algo (lz4k/lz4kd/lz4k_oplus/842, oplus badblock-fixed), default LZ4; zram_adaptive bundled (zram.ko swapped to in-kernel build)" >> ./ak3.log
           echo "IPset: ${{ github.event.inputs.better_net }}" >> ./ak3.log
           echo "BBR&Brutal: ${{ github.event.inputs.bbr_enable }}" >> ./ak3.log
           echo "Droidspaces: ${{ github.event.inputs.droidspaces_enable }}" >> ./ak3.log
@@ -970,7 +943,7 @@ jobs:
           1. 若你的手机已经安装了第三方Recovery（如TWRP)，可下载对应机型的AnyKernel刷机包后进入Recovery模式，通过Recovery刷入刷机包后重启设备；
           2. 若你的手机之前已有 root 权限，可在手机上安装[HorizonKernelFlasher](https://github.com/libxzr/HorizonKernelFlasher/releases)，在HorizonKernelFlasher中刷入AnyKernel刷机包并重启；
           3. 若你之前已刷入SukiSU Ultra内核，且SukiSU Ultra管理器已更新至最新版本，可在SukiSU Ultra管理器中直接刷入AnyKernel刷机包并重启；
-          4. 更换内核（无论是否带 LZ4KD/LZ4K 算法）时 zram 压缩算法列表会变化，刷入后 zram 内容被重置属正常现象；若使用 zram_adaptive 等第三方 zram 管理模块，请先更新其配置适配新内核再刷入；
+          4. 刷入无lz4kd补丁版的内核前若刷入过lz4kd补丁版的内核，为避免出错，请先关闭zram模块；
           5. 由于KernelSU上游更新了元模块功能，最新版KSU管理器（包括除KernelSU Next以外的各分支）需要配合元模块(metamodule)才能正常挂载模块。目前的元模块包括[meta overlayfs](https://github.com/KernelSU-Modules-Repo/meta-overlayfs), [mountify](https://github.com/backslashxx/mountify), [meta magicmount](https://github.com/7a72/meta-magic_mount/), [meta magicmount rs](https://github.com/Tools-cx-app/meta-magic_mount/), [hybrid mount](https://github.com/YuzakiKokuban/meta-hybrid_mount)等。若你是第一次使用KSU或刚从旧版KSU管理器升级至新版，请先安装一个元模块，这样其他涉及系统挂载的模块才能正常运行；
           6. KernelPatch Next（即KPN）是一个独立于KSU的KPM实现，可以运行在任意KSU/面具环境中（不适用于Apatch），且不能与(Re)SukiSU内置的kpm功能共同使用，使用前请保证你的内核没有内置的kpm实现/修补。
 
