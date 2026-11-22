@@ -356,6 +356,27 @@ jobs:
           # 会拒载 OEM oplus_bsp_zsmalloc.ko，run 45002432750/45005568950 两轮黑屏根因）
           wget -q https://github.com/$GITHUB_REPOSITORY/raw/refs/heads/$GITHUB_REF_NAME/other_patch/lz4kd_66_stripped.patch -O lz4kd.patch
           patch -p1 -F 3 < lz4kd.patch || true
+          # lz4k_oplus 实现层补全 + 坏块修复（misaka5202/zram-lkm v0.1.6）：SukiSU 目录缺 lib 实现，
+          # misaka 版带 out_end 目标容量检查（小字面量快路径越界 ~31B 修复）+ get_size NULL 守卫
+          # （CHANGELOG: lz4k_oplus 解压越界为攻击可达面）。实现文件落 lib/lz4k_oplus/，注册层走 lz4k_oplus.patch
+          mkdir -p ./lib/lz4k_oplus
+          cp ../SukiSU_patch/other/zram/lz4k_oplus/lz4k.c ./lib/lz4k_oplus/lz4k.c
+          cp ../SukiSU_patch/other/zram/lz4k_oplus/Kconfig ./lib/lz4k_oplus/Kconfig
+          cp ../SukiSU_patch/other/zram/lz4k_oplus/Makefile ./lib/lz4k_oplus/Makefile
+          wget -q https://raw.githubusercontent.com/misaka5202/zram-lkm/v0.1.6/extra/lz4k_oplus/lz4k.h -O ./lib/lz4k_oplus/lz4k.h
+          wget -q https://raw.githubusercontent.com/misaka5202/zram-lkm/v0.1.6/extra/lz4k_oplus/lz4k_compress.c -O ./lib/lz4k_oplus/lz4k_compress.c
+          wget -q https://raw.githubusercontent.com/misaka5202/zram-lkm/v0.1.6/extra/lz4k_oplus/lz4k_decompress.c -O ./lib/lz4k_oplus/lz4k_decompress.c
+          # 应用上游 lz4k_oplus.patch（lib/Kconfig 挂载+Makefile obj-y+zram Kconfig+depends+zcomp.c 算法名单）
+          cp ../SukiSU_patch/other/zram/zram_patch/6.6/lz4k_oplus.patch ./
+          patch -p1 -F 3 < lz4k_oplus.patch || true
+          # crypto 层注册（SukiSU crypto/lz4k.c → crypto_lz4k_oplus.o 的 crypto 部分）
+          cp ../SukiSU_patch/other/zram/lz4k_oplus/lz4k.c ./crypto/lz4k_oplus_crypto.c
+          if ! grep -q CRYPTO_LZ4K_OPLUS ./crypto/Kconfig; then
+            printf '\nconfig CRYPTO_LZ4K_OPLUS\n\ttristate "Lz4k_oplus compression algorithm"\n\tselect CRYPTO_ALGAPI\n\tselect CRYPTO_ACOMP2\n\thelp\n\t  This is the lz4k_oplus algorithm.\n' >> ./crypto/Kconfig
+          fi
+          if ! grep -q 'lz4k_oplus.o' ./crypto/Makefile; then
+            printf 'obj-$(CONFIG_CRYPTO_LZ4K_OPLUS) += lz4k_oplus.o\nlz4k_oplus-y := lz4k_oplus_crypto.o\n' >> ./crypto/Makefile
+          fi
           # 残留校验：main.c 必须未被改动（fail-fast）
           if ! git -C ../common diff --stat -- kernel/module/main.c 2>/dev/null | grep -q .; then
             echo "[OK] kernel/module/main.c 未被 lz4kd 补丁触碰"
@@ -724,6 +745,15 @@ jobs:
           if [[ "$GITHUB_REF_NAME" != "main" && ( "${{ github.event.inputs.ksu_type }}" == "sukisu" || "${{ github.event.inputs.ksu_type }}" == "bakasu" ) ]]; then
             KSU_TYPENAME="KowSU"
           fi
+          # zram_adaptive（上游原样路径）：切换/大小管理 action 菜单；打包时把其 5.15 旧 ko 替换为本内核编译版
+          if [[ "${{ github.event.inputs.lz4kd_enable }}" == "true" ]]; then
+            wget https://raw.githubusercontent.com/$GITHUB_REPOSITORY/refs/heads/$GITHUB_REF_NAME/zram.zip -O ./zram.zip
+            # 用本内核编译的 zram.ko 替换包内 5.15 ko（vermagic 不匹配会被拒载 → zram0 消失 → 黑屏）
+            mkdir -p ./zram_zip_tmp && cd ./zram_zip_tmp
+            unzip -o -q ../zram.zip
+            cp -f ../zram.ko ./zram.ko
+            zip -q -r ../zram.zip.new . && cd .. && mv -f zram.zip.new zram.zip && rm -rf ./zram_zip_tmp
+          fi
           if [[ ${{ github.event.inputs.kpm_enable }} == 'true' ]]; then
             wget https://github.com/cctv18/KPatch-Next/releases/latest/download/kpn.zip
           fi
@@ -778,7 +808,7 @@ jobs:
           echo "KPM: ${{ github.event.inputs.kpm_enable }}" >> ./ak3.log
           echo "LZ4: ${{ github.event.inputs.lz4_enable }}" >> ./ak3.log
           echo "LZ4KD: ${{ github.event.inputs.lz4kd_enable }}" >> ./ak3.log
-          echo "lz4kd: in-tree algo (lz4k/lz4kd/lz4k_oplus/842), default LZ4; no zram modules bundled" >> ./ak3.log
+          echo "lz4kd: in-tree algo (lz4k/lz4kd/lz4k_oplus/842, oplus badblock-fixed), default LZ4; zram_adaptive bundled (zram.ko swapped to in-kernel build)" >> ./ak3.log
           echo "IPset: ${{ github.event.inputs.better_net }}" >> ./ak3.log
           echo "BBR&Brutal: ${{ github.event.inputs.bbr_enable }}" >> ./ak3.log
           echo "Droidspaces: ${{ github.event.inputs.droidspaces_enable }}" >> ./ak3.log
