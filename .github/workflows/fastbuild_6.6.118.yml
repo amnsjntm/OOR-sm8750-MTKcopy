@@ -313,6 +313,9 @@ jobs:
             # susfs-KowSU 类型冲突后处理（v6：bridge 旧签名回落 + sucompat/supercall 终态替换 + 残留 fail-fast）
             wget -q https://github.com/$GITHUB_REPOSITORY/raw/refs/heads/$GITHUB_REF_NAME/other_patch/fix_bridge_kowsu_v6.py -O fix_bridge_kowsu_v6.py
             python3 fix_bridge_kowsu_v6.py
+            # 管理器兼容：多签名识别（BakaSU/官方/KOWX712）+ 6 个扩展 ioctl（GET_FULL_VERSION 等）
+            wget -q https://github.com/$GITHUB_REPOSITORY/raw/refs/heads/$GITHUB_REF_NAME/other_patch/fix_manager_compat_kowsu.py -O fix_manager_compat_kowsu.py
+            python3 fix_manager_compat_kowsu.py
             cd ../../
           else
             echo "已选择无内置KernelSU模式，跳过susfs配置..."
