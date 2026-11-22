@@ -40,10 +40,10 @@ on:
         type: boolean
         default: 'true'
       lz4kd_enable:
-        description: '是否安装 LZ4KD 补丁(若已开启lz4+zstd补丁则可不开启)'
+        description: '是否安装 LZ4KD 补丁(与lz4+zstd补丁可同开: 触碰文件无交集, zram 压缩算法多注册 lz4k/lz4kd 可选, 默认压缩器仍由所选算法决定)'
         required: true
         type: boolean
-        default: 'false'
+        default: 'true'
       bbr_enable:
         description: "是否启用bbr算法(优化上行数据,对手机日用无太大意义甚至可能负优化;false关闭,true仅加入算法,default启用算法并设为默认)"
         required: true
@@ -66,7 +66,7 @@ on:
         description: '是否开启网络功能拓展配置(用于为ipset及需要iptables等高级网络功能内核支持的程序提供支持)'
         required: true
         type: boolean
-        default: 'false'
+        default: 'true'
       adios_enable:
         description: '是否启用ADIOS IO调度器支持(提升IO读写性能)'
         required: true
@@ -689,25 +689,34 @@ jobs:
           rm -rf ./AnyKernel3/.git
           cd AnyKernel3
           cp ../common/out/arch/arm64/boot/Image ./Image
-          # 拷贝本内核编译的 zram.ko（修复 zram_adaptive 模块里 5.15 跨版本坏 ko）
+          # 拷贝本内核编译的 zram.ko 进包（供 zram_adaptive 等外部方案按需取用；不再自动替换）
           cp ../common/out/drivers/block/zram/zram.ko ./zram.ko
-          # 向 anykernel.sh 注入 zram.ko 自动替换逻辑（修复 zram_adaptive 的 5.15 坏 ko）
-          # 向 anykernel.sh 追加 zram.ko 自动替换逻辑（printf 逐行，避免 heredoc 缩进问题）
-          {          echo ""
-          echo "## zram.ko auto-replace (fix zram_adaptive 5.15 cross-version ko)"
-          echo "if [ -f \"\$AKHOME/zram.ko\" ]; then"
-          echo "    ZM=/data/adb/modules/zram_adaptive"
-          echo "    if [ -d \"\$ZM\" ]; then"
-          echo "        ui_print \"[-] Replacing zram_adaptive zram.ko (5.15 -> bundled)\""
-          echo "        cp -f \$ZM/zram.ko \$ZM/zram.ko.bak.5.15"
-          echo "        cp -f \$AKHOME/zram.ko \$ZM/zram.ko"
-          echo "        chmod 644 \$ZM/zram.ko"
-          echo "        ui_print \"[+] zram.ko replaced, takes effect after reboot\""
-          echo "    else"
-          echo "        ui_print \"[i] zram_adaptive not installed, skipping\""
-          echo "    fi"
-          echo "fi"
-          } >> ./anykernel.sh
+          # 追加 zram_lkm 模块安装逻辑（与 zram.zip/kpn.zip 的 ksud 安装同构；镜像检查先行）
+          # 注意：zram.zip(zram_adaptive) 与 zram_lkm.zip(zram-lkm) 功能重叠（前者=直替 zram.ko+开机切换，
+          # 后者=KMI 算法模块零内核改动），双装会 rmmod/insmod 打架——安装时检测互斥
+          if [ -f ./Image ]; then
+            {
+              echo ""
+              echo "if [ -f \"\$AKHOME/zram_lkm.zip\" ]; then"
+              echo "    MODULE_PATH=\"\$AKHOME/zram_lkm.zip\""
+              echo "    KSUD_PATH=\"/data/adb/ksud\""
+              echo "    if [ -f \"\$KSUD_PATH\" ]; then"
+              echo "        if [ -d \"/data/adb/modules/zram_adaptive\" ]; then"
+              echo "            ui_print \"[!] 检测到 zram_adaptive 模块已安装，与 ZRAM-LKM 功能重叠\""
+              echo "            ui_print \"[!] 二选一: 卸载 zram_adaptive 后重启再刷, 或跳过本模块\""
+              echo "            ui_print \"[i] 本模块未安装 (避免 rmmod/insmod 冲突)\""
+              echo "        else"
+              echo "            ui_print \"Installing ZRAM-LKM Module (lz4k/lz4kd/lz4k_oplus algo modules, v0.1.6)...\""
+              echo "            /data/adb/ksud module install \"\$MODULE_PATH\""
+              echo "            ui_print \"[i] 默认只加载算法不切换; 手动切换: echo lz4kd > /sys/block/zram0/comp_algorithm\""
+              echo "            ui_print \"Installation Complete!\""
+              echo "        fi"
+              echo "    else"
+              echo "        ui_print \"KSUD Not Found, skipping ZRAM-LKM installation...\""
+              echo "    fi"
+              echo "fi"
+            } >> ./anykernel.sh
+          fi
           if [[ ! -f ./Image ]]; then
             echo "未找到内核镜像文件，构建可能出错"
             exit 1
@@ -718,7 +727,12 @@ jobs:
             KSU_TYPENAME="BakaSU"
           elif [[ ${{ github.event.inputs.ksu_type }} == "ksunext" ]]; then
             KSU_TYPENAME="KSUNext"
-          elif [[ ${{ github.event.inputs.ksu_type }} == "ksu" ]]; then
+          fi
+          # 实验分支 bakasu/sukisu 实际构建 KowSU（见「添加KernelSU」步骤）——包名/日志对齐
+          if [[ "$GITHUB_REF_NAME" != "main" && ( "${{ github.event.inputs.ksu_type }}" == "sukisu" || "${{ github.event.inputs.ksu_type }}" == "bakasu" ) ]]; then
+            KSU_TYPENAME="KowSU"
+          fi
+          if [[ "${{ github.event.inputs.ksu_type }}" == "ksu" ]]; then
             KSU_TYPENAME="KSU"
           else
             KSU_TYPENAME="无内置KSU"
@@ -726,6 +740,9 @@ jobs:
           if [[ "${{ github.event.inputs.lz4kd_enable }}" == "true" ]]; then
             wget https://raw.githubusercontent.com/$GITHUB_REPOSITORY/refs/heads/$GITHUB_REF_NAME/zram.zip
           fi
+          # zram-lkm 预编译模块（misaka5202/zram-lkm v0.1.6, KMI=android15-6.6, 修复 lz4k_oplus 解压越界等坏块）：
+          # 与内核内 LZ4KD 补丁互补——内核补丁给 zram 注册 lz4k/lz4kd 算法；模块方案零内核改动、坏块修复随模块更新
+          wget -q https://github.com/misaka5202/zram-lkm/releases/download/v0.1.6/zram-lkm-v0.1.6-android15-6.6-arm64.zip -O ./zram_lkm.zip
           if [[ ${{ github.event.inputs.kpm_enable }} == 'true' ]]; then
             wget https://github.com/cctv18/KPatch-Next/releases/latest/download/kpn.zip
           fi
@@ -780,6 +797,7 @@ jobs:
           echo "KPM: ${{ github.event.inputs.kpm_enable }}" >> ./ak3.log
           echo "LZ4: ${{ github.event.inputs.lz4_enable }}" >> ./ak3.log
           echo "LZ4KD: ${{ github.event.inputs.lz4kd_enable }}" >> ./ak3.log
+          echo "zram-lkm: bundled (v0.1.6 android15-6.6, KMI prebuilt)" >> ./ak3.log
           echo "IPset: ${{ github.event.inputs.better_net }}" >> ./ak3.log
           echo "BBR&Brutal: ${{ github.event.inputs.bbr_enable }}" >> ./ak3.log
           echo "Droidspaces: ${{ github.event.inputs.droidspaces_enable }}" >> ./ak3.log
@@ -943,7 +961,7 @@ jobs:
           1. 若你的手机已经安装了第三方Recovery（如TWRP)，可下载对应机型的AnyKernel刷机包后进入Recovery模式，通过Recovery刷入刷机包后重启设备；
           2. 若你的手机之前已有 root 权限，可在手机上安装[HorizonKernelFlasher](https://github.com/libxzr/HorizonKernelFlasher/releases)，在HorizonKernelFlasher中刷入AnyKernel刷机包并重启；
           3. 若你之前已刷入SukiSU Ultra内核，且SukiSU Ultra管理器已更新至最新版本，可在SukiSU Ultra管理器中直接刷入AnyKernel刷机包并重启；
-          4. 刷入无lz4kd补丁版的内核前若刷入过lz4kd补丁版的内核，为避免出错，请先关闭zram模块；
+          4. 更换内核（无论是否带 LZ4KD/LZ4K 算法）时 zram 压缩算法列表会变化，刷入后 zram 内容被重置属正常现象；若使用 zram_adaptive 等第三方 zram 管理模块，请先更新其配置适配新内核再刷入；
           5. 由于KernelSU上游更新了元模块功能，最新版KSU管理器（包括除KernelSU Next以外的各分支）需要配合元模块(metamodule)才能正常挂载模块。目前的元模块包括[meta overlayfs](https://github.com/KernelSU-Modules-Repo/meta-overlayfs), [mountify](https://github.com/backslashxx/mountify), [meta magicmount](https://github.com/7a72/meta-magic_mount/), [meta magicmount rs](https://github.com/Tools-cx-app/meta-magic_mount/), [hybrid mount](https://github.com/YuzakiKokuban/meta-hybrid_mount)等。若你是第一次使用KSU或刚从旧版KSU管理器升级至新版，请先安装一个元模块，这样其他涉及系统挂载的模块才能正常运行；
           6. KernelPatch Next（即KPN）是一个独立于KSU的KPM实现，可以运行在任意KSU/面具环境中（不适用于Apatch），且不能与(Re)SukiSU内置的kpm功能共同使用，使用前请保证你的内核没有内置的kpm实现/修补。
 
