@@ -72,18 +72,28 @@ typedef struct {
 ''')
 log.append(("W manager/manager_sign.h", newfile))
 
-# 2. compat/kernel_compat.h [new minimal]
+# 2. compat/kernel_compat.h [v2 — helpers included]
 p = ksu / "compat" / "kernel_compat.h"
-newfile = not p.is_file()
+oldc = read(p) if p.is_file() else ""
+newfile = "ksu_kernel_read_compat" not in oldc
 if newfile:
     p.parent.mkdir(parents=True, exist_ok=True)
     write(p, r'''#ifndef __KSU_H_KERNEL_COMPAT_MINI
 #define __KSU_H_KERNEL_COMPAT_MINI
-/* minimal compat shim for ported manager files (KowSU provides
- * ksu_filp_open_nonotify in include/util.h) */
+/* compat shim for ported manager files (KowSU provides ksu_filp_open_nonotify
+ * in include/util.h; helpers ported from Baka-SU/BakaSU kernel_compat) */
 #include <linux/version.h>
 #include <linux/types.h>
+#include <linux/fs.h>
+#include <linux/err.h>
+#include <linux/sched.h>
+#include <linux/pid.h>
+#include <linux/slab.h>
+#include <linux/uaccess.h>
+#include <klog.h>
 #include "util.h" /* ksu_filp_open_nonotify */
+
+#define KSU_MAX_PACKAGE_NAME 256
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(3, 14, 0)
 #define ksu_get_uid_t(x) (*(unsigned int *)&(x))
@@ -91,7 +101,71 @@ if newfile:
 #define ksu_get_uid_t(x) ((x).val)
 #endif
 
+/* ---- task_work helpers (BakaSU) ---- */
+struct ksu_task_work_struct {
+    struct callback_head cb;
+    void (*callback)(void *);
+    void *data;
+};
+
+static void ksu_task_work_dispatcher(struct callback_head *cb)
+{
+    struct ksu_task_work_struct *tw = container_of(cb, struct ksu_task_work_struct, cb);
+    tw->callback(tw->data);
+    kfree(tw);
+}
+
+void ksu_run_in_init_if_possible(void (*callback)(void *), void *data)
+{
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 5, 0)
+    struct task_struct *tsk;
+
+    tsk = get_pid_task(find_vpid(1), PIDTYPE_PID);
+    if (!tsk) {
+        pr_err("ksu run in init find init task err\n");
+        return;
+    }
+
+    struct ksu_task_work_struct *tw = kzalloc(sizeof(struct ksu_task_work_struct), GFP_ATOMIC);
+    if (!tw) {
+        pr_err("ksu run in init alloc tw err\n");
+        put_task_struct(tsk);
+        return;
+    }
+
+    tw->callback = callback;
+    tw->data = data;
+    tw->cb.func = ksu_task_work_dispatcher;
+
+    if (task_work_add(tsk, &tw->cb, TWA_RESUME)) {
+        kfree(tw);
+        pr_warn("ksu run in init add task_work failed\n");
+    }
+
+    put_task_struct(tsk);
+#else
+    callback(data);
+#endif
+}
+
+ssize_t ksu_kernel_read_compat(struct file *p, void *buf, size_t count, loff_t *pos)
+{
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 14, 0) || defined(KSU_OPTIONAL_KERNEL_READ)
+    return kernel_read(p, buf, count, pos);
+#else
+    mm_segment_t old_fs;
+    old_fs = get_fs();
+    set_fs(get_ds());
+    ssize_t result = vfs_read(p, (void __user *)buf, count, pos);
+    set_fs(old_fs);
+    return result;
+#endif
+}
+
+int get_pkg_from_apk_path(char *pkg, const char *path);
+
 #endif /* __KSU_H_KERNEL_COMPAT_MINI */
+
 ''')
 log.append(("W compat/kernel_compat.h (mini)", newfile))
 
@@ -1026,6 +1100,40 @@ int ksu_get_manager_signature_index_by_appid(u16 appid)
 ''')
 log.append(("R manager/throne_tracker.c (+manager list)", newfile))
 
+# 5b. throne_tracker.h [replace — flag defines + track_throne(unsigned)]
+p = ksu / "manager" / "throne_tracker.h"
+oldh = read(p) if p.is_file() else ""
+newh = "TRACK_THRONE_FORCE_SYNCHRONOUS" not in oldh
+write(p, r'''#ifndef __KSU_H_THRONE_TRACKER
+#define __KSU_H_THRONE_TRACKER
+
+#define TRACK_THRONE_PRUNE_ONLY (1 << 0)
+#define TRACK_THRONE_FROM_RENAMEAT (1 << 1)
+#define TRACK_THRONE_FORCE_SYNCHRONOUS (1 << 2)
+
+#ifdef CONFIG_KSU_DISABLE_MANAGER
+static inline void ksu_throne_tracker_init(void)
+{
+}
+
+static inline void ksu_throne_tracker_exit(void)
+{
+}
+
+static inline void track_throne(unsigned int flags)
+{
+}
+#else
+void ksu_throne_tracker_init(void);
+void ksu_throne_tracker_exit(void);
+void track_throne(unsigned int flags);
+#endif
+
+#endif
+''')
+log.append(("R manager/throne_tracker.h", newh))
+
+
 # 6. pkg_observer.c [replace]
 p = ksu / "manager" / "pkg_observer.c"
 old = read(p) if p.is_file() else ""
@@ -1212,48 +1320,395 @@ if _pkg_changed:
 log.append(("I pkg_observer.c susfs renewals", _pkg_changed))
 
 
-# 7. apk_sign.{c,h} multi-sig [patch]
+# 7. apk_sign.c multi-sig [canonical full-file replacement]
 p = ksu / "manager" / "apk_sign.c"
-t = read(p)
-changed = False
-if "manager_sign.h" not in t:
-    if '#include "manager/apk_sign.h"' in t:
-        t = t.replace('#include "manager/apk_sign.h"', '#include "manager/apk_sign.h"\n#include "manager/manager_sign.h"', 1)
-    if '#include "manager/manager_sign.h"' not in t:
-        t = '#include "manager/manager_sign.h"\n' + t
-    changed = True
-if "check_v2_signature(char *path, u8 *signature_index)" not in t:
-    t = t.replace(
-        "static __always_inline bool check_v2_signature(char *path, unsigned expected_size, const char *expected_sha256)",
-        "static __always_inline bool check_v2_signature(char *path, u8 *signature_index)")
-    changed = True
-# check_block: new signature + key table at top of function
-if "check_block(struct file *fp, loff_t *pos, loff_t block_end, u8 *signature_index)" not in t:
-    t = t.replace(
-        "static bool check_block(struct file *fp, loff_t *pos, loff_t block_end, unsigned expected_size,\n                        const char *expected_sha256)\n{",
-        "static bool check_block(struct file *fp, loff_t *pos, loff_t block_end, u8 *signature_index)\n{\n    static apk_sign_key_t apk_sign_keys[] = {\n        { EXPECTED_SIZE_BAKASU, EXPECTED_HASH_BAKASU }, /* Baka-SU/BakaSU */\n        { EXPECTED_SIZE_OFFICIAL, EXPECTED_HASH_OFFICIAL }, /* tiann/KernelSU */\n        { EXPECTED_SIZE_KOWX712, EXPECTED_HASH_KOWX712 }, /* KOWX712/KernelSU */\n    };\n    int sign_i;\n    bool key_matched = false;\n    (void)key_matched;")
-    changed = True
-# call site drops old params
-if "check_block(fp, &pos, pair_end, expected_size, expected_sha256)" in t:
-    t = t.replace("v2_signing_valid = check_block(fp, &pos, pair_end, expected_size, expected_sha256);",
-                  "v2_signing_valid = check_block(fp, &pos, pair_end, signature_index);")
-    changed = True
-# hash compare loop replaces single-hash compare
-if "strcmp(hash_str, apk_sign_keys[sign_i].sha256)" not in t:
-    t = t.replace(
-        'bin2hex(hash_str, digest, SHA256_DIGEST_SIZE);\n    pr_info("sha256: %s, expected: %s\\n", hash_str, expected_sha256);\n    return strcmp(expected_sha256, hash_str) == 0;',
-        'bin2hex(hash_str, digest, SHA256_DIGEST_SIZE);\n    for (sign_i = 0; sign_i < (int)(sizeof(apk_sign_keys) / sizeof(apk_sign_keys[0])); sign_i++) {\n        if (certificate_size == apk_sign_keys[sign_i].size &&\n            strcmp(hash_str, apk_sign_keys[sign_i].sha256) == 0) {\n            if (signature_index)\n                *signature_index = (u8)sign_i;\n            filp_close(fp, 0);\n            return true;\n        }\n    }\n    return false;')
-    changed = True
-if "return check_v2_signature(path, EXPECTED_SIZE, EXPECTED_HASH);" in t:
-    t = t.replace("return check_v2_signature(path, EXPECTED_SIZE, EXPECTED_HASH);",
-                  "return check_v2_signature(path, signature_index);")
-    changed = True
-if "bool is_manager_apk(char *path)\n{" in t:
-    t = t.replace("bool is_manager_apk(char *path)\n{", "bool is_manager_apk(char *path, u8 *signature_index)\n{")
-    changed = True
-if changed:
-    write(p, t)
-log.append(("P manager/apk_sign.c multi-sig", changed))
+t = read(p) if p.is_file() else ""
+if "apk_sign_keys[]" not in t or "check_v2_signature(char *path, u8 *signature_index)" not in t:
+    write(p, r'''#include "util.h"
+#include <linux/err.h>
+#include <linux/fs.h>
+#include <linux/gfp.h>
+#include <linux/kernel.h>
+#include <linux/limits.h>
+#include <linux/slab.h>
+#include <linux/version.h>
+#ifdef CONFIG_KSU_DEBUG
+#include <linux/moduleparam.h>
+#endif
+#include <crypto/hash.h>
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 11, 0)
+#include <crypto/sha2.h>
+#else
+#include <crypto/sha.h>
+#endif
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 4, 0)
+#include <linux/hex.h>
+#endif
+
+#include "manager/apk_sign.h"
+#include "manager/manager_sign.h"
+#include "uapi/app_profile.h"
+#include "klog.h" // IWYU pragma: keep
+
+struct sdesc {
+    struct shash_desc shash;
+    char ctx[];
+};
+
+static struct sdesc *init_sdesc(struct crypto_shash *alg)
+{
+    struct sdesc *sdesc;
+    int size;
+
+    size = sizeof(struct shash_desc) + crypto_shash_descsize(alg);
+    sdesc = kzalloc(size, GFP_KERNEL);
+    if (!sdesc)
+        return ERR_PTR(-ENOMEM);
+    sdesc->shash.tfm = alg;
+    return sdesc;
+}
+
+static int calc_hash(struct crypto_shash *alg, const unsigned char *data, unsigned int datalen, unsigned char *digest)
+{
+    struct sdesc *sdesc;
+    int ret;
+
+    sdesc = init_sdesc(alg);
+    if (IS_ERR(sdesc)) {
+        pr_info("can't alloc sdesc\n");
+        return PTR_ERR(sdesc);
+    }
+
+    ret = crypto_shash_digest(&sdesc->shash, data, datalen, digest);
+    kfree(sdesc);
+    return ret;
+}
+
+static int ksu_sha256(const unsigned char *data, unsigned int datalen, unsigned char *digest)
+{
+    struct crypto_shash *alg;
+    char *hash_alg_name = "sha256";
+    int ret;
+
+    alg = crypto_alloc_shash(hash_alg_name, 0, 0);
+    if (IS_ERR(alg)) {
+        pr_info("can't alloc alg %s\n", hash_alg_name);
+        return PTR_ERR(alg);
+    }
+    ret = calc_hash(alg, data, datalen, digest);
+    crypto_free_shash(alg);
+    return ret;
+}
+
+static bool read_exact(struct file *fp, void *buffer, size_t size, loff_t *pos, loff_t end)
+{
+    if (*pos < 0 || *pos > end || size > (size_t)(end - *pos))
+        return false;
+
+    return kernel_read(fp, buffer, size, pos) == (ssize_t)size;
+}
+
+static bool read_length_prefixed_end(struct file *fp, loff_t *pos, loff_t container_end, loff_t *value_end)
+{
+    u32 length;
+
+    if (!read_exact(fp, &length, sizeof(length), pos, container_end))
+        return false;
+    if (length > INT_MAX || length > (u64)(container_end - *pos))
+        return false;
+
+    *value_end = *pos + length;
+    return true;
+}
+
+static bool check_block(struct file *fp, loff_t *pos, loff_t block_end, u8 *signature_index)
+{
+    static apk_sign_key_t apk_sign_keys[] = {
+        { EXPECTED_SIZE_BAKASU, EXPECTED_HASH_BAKASU }, /* Baka-SU/BakaSU */
+        { EXPECTED_SIZE_OFFICIAL, EXPECTED_HASH_OFFICIAL }, /* tiann/KernelSU */
+        { EXPECTED_SIZE_KOWX712, EXPECTED_HASH_KOWX712 }, /* KOWX712/KernelSU */
+    };
+    int sign_i;
+    bool key_matched = false;
+    (void)key_matched;
+    loff_t signers_end, signer_end, signed_data_end, digests_end, certificates_end;
+    u32 certificate_size;
+
+    // v2 block: signers sequence -> first signer -> signed data -> digests
+    if (!read_length_prefixed_end(fp, pos, block_end, &signers_end) ||
+        !read_length_prefixed_end(fp, pos, signers_end, &signer_end) ||
+        !read_length_prefixed_end(fp, pos, signer_end, &signed_data_end) ||
+        !read_length_prefixed_end(fp, pos, signed_data_end, &digests_end))
+        return false;
+
+    *pos = digests_end;
+    if (!read_length_prefixed_end(fp, pos, signed_data_end, &certificates_end) ||
+        !read_exact(fp, &certificate_size, sizeof(certificate_size), pos, certificates_end))
+        return false;
+
+    if (certificate_size > INT_MAX || certificate_size > (u64)(certificates_end - *pos))
+        return false;
+
+#define CERT_MAX_LENGTH 1024
+    if (certificate_size > CERT_MAX_LENGTH) {
+        pr_info("cert length overlimit\n");
+        return false;
+    }
+
+    char cert[CERT_MAX_LENGTH];
+    if (!read_exact(fp, cert, certificate_size, pos, certificates_end))
+        return false;
+
+    unsigned char digest[SHA256_DIGEST_SIZE];
+    if (ksu_sha256(cert, certificate_size, digest)) {
+        pr_info("sha256 error\n");
+        return false;
+    }
+
+    char hash_str[SHA256_DIGEST_SIZE * 2 + 1];
+    hash_str[SHA256_DIGEST_SIZE * 2] = '\0';
+
+    bin2hex(hash_str, digest, SHA256_DIGEST_SIZE);
+    for (sign_i = 0; sign_i < (int)(sizeof(apk_sign_keys) / sizeof(apk_sign_keys[0])); sign_i++) {
+        if (certificate_size == apk_sign_keys[sign_i].size &&
+            strcmp(hash_str, apk_sign_keys[sign_i].sha256) == 0) {
+            if (signature_index)
+                *signature_index = (u8)sign_i;
+            filp_close(fp, 0);
+            return true;
+        }
+    }
+    return false;
+}
+
+static __always_inline bool check_v2_signature(char *path, u8 *signature_index)
+{
+    unsigned char buffer[0x10] = { 0 };
+    u32 cd_offset, cd_size;
+    u32 zip64_locator_magic;
+    u64 size_of_block, size_of_block_at_head;
+
+    loff_t pos, pairs_end, file_size, eocd_offset;
+
+    bool v2_signing_valid = false;
+    int v2_signing_blocks = 0;
+
+    int i;
+    struct file *fp = ksu_filp_open_nonotify(path, O_RDONLY | O_NOATIME);
+    if (IS_ERR(fp)) {
+        pr_err("open %s error.\n", path);
+        return false;
+    }
+
+    file_size = generic_file_llseek(fp, 0, SEEK_END);
+    if (file_size < 0)
+        goto clean;
+
+    // https://en.wikipedia.org/wiki/Zip_(file_format)#End_of_central_directory_record_(EOCD)
+    for (i = 0;; ++i) {
+        unsigned short comment_size;
+        u32 magic;
+        pos = file_size - i - 2;
+        if (!read_exact(fp, &comment_size, sizeof(comment_size), &pos, file_size))
+            goto clean;
+        if (comment_size == i) {
+            pos -= 22;
+            if (!read_exact(fp, &magic, sizeof(magic), &pos, file_size))
+                goto clean;
+            if (magic == 0x06054b50) {
+                eocd_offset = pos - sizeof(magic);
+                break;
+            }
+        }
+        if (i == 0xffff) {
+            pr_info("error: cannot find eocd\n");
+            goto clean;
+        }
+    }
+
+    // reject ZIP64 before looking for a signing block
+    if (eocd_offset >= 20) {
+        pos = eocd_offset - 20;
+        if (!read_exact(fp, &zip64_locator_magic, sizeof(zip64_locator_magic), &pos, file_size))
+            goto clean;
+        if (zip64_locator_magic == 0x07064b50)
+            goto clean;
+    }
+
+    pos = eocd_offset + 12;
+    // size of central directory
+    if (!read_exact(fp, &cd_size, sizeof(cd_size), &pos, file_size))
+        goto clean;
+    // offset of central directory
+    if (!read_exact(fp, &cd_offset, sizeof(cd_offset), &pos, file_size))
+        goto clean;
+    if ((u64)cd_offset > (u64)eocd_offset || (u64)cd_size != (u64)eocd_offset - cd_offset)
+        goto clean;
+    if (cd_offset < 0x20)
+        goto clean;
+
+    pairs_end = (loff_t)cd_offset - 0x18;
+    pos = pairs_end;
+
+    if (!read_exact(fp, &size_of_block, sizeof(size_of_block), &pos, cd_offset))
+        goto clean;
+    if (!read_exact(fp, buffer, sizeof(buffer), &pos, cd_offset))
+        goto clean;
+    if (memcmp((char *)buffer, "APK Sig Block 42", sizeof(buffer)))
+        goto clean;
+
+    if (size_of_block < 0x18 || size_of_block > INT_MAX - 0x8 || size_of_block > (u64)cd_offset - 0x8)
+        goto clean;
+
+    pos = (loff_t)cd_offset - (loff_t)size_of_block - 0x8;
+    if (!read_exact(fp, &size_of_block_at_head, sizeof(size_of_block_at_head), &pos, pairs_end))
+        goto clean;
+    if (size_of_block_at_head != size_of_block)
+        goto clean;
+
+    // Scan every length-prefixed pair, matching AOSP's signing block parser
+    // Each valid pair consumes an 8-byte length plus at least a 4-byte ID, so
+    // malformed entries fail below instead of spinning in place.
+    while (pos < pairs_end) {
+        uint32_t id;
+        u64 size_of_pair;
+        loff_t pair_end;
+
+        if (!read_exact(fp, &size_of_pair, sizeof(size_of_pair), &pos, pairs_end))
+            goto invalid;
+        if (size_of_pair < sizeof(id) || size_of_pair > INT_MAX || size_of_pair > (u64)(pairs_end - pos))
+            goto invalid;
+
+        pair_end = pos + (loff_t)size_of_pair;
+        if (!read_exact(fp, &id, sizeof(id), &pos, pair_end))
+            goto invalid;
+
+        if (id == 0x7109871au) {
+            v2_signing_blocks++;
+            v2_signing_valid = check_block(fp, &pos, pair_end, signature_index);
+        } else if (id != 0x42726577u) { // APK verity padding
+            // https://cs.android.com/android/platform/superproject/+/android-latest-release:tools/apksig/src/main/java/com/android/apksig/internal/apk/ApkSigningBlockUtils.java;l=102;drc=ebe4dfd4fd6550c949a6c7c2427484bf5e96500b
+#ifdef CONFIG_KSU_DEBUG
+            pr_info("Unexpected signature block id: 0x%08x\n", id);
+#endif
+            goto invalid;
+        }
+        pos = pair_end;
+    }
+
+    if (v2_signing_blocks != 1) {
+#ifdef CONFIG_KSU_DEBUG
+        pr_err("Unexpected v2 signature count: %d\n", v2_signing_blocks);
+#endif
+        v2_signing_valid = false;
+    }
+
+    goto clean;
+
+invalid:
+    v2_signing_valid = false;
+clean:
+    filp_close(fp, 0);
+
+    return v2_signing_valid;
+}
+
+#ifdef CONFIG_KSU_DEBUG
+
+int ksu_debug_manager_appid = -1;
+
+#include "manager/manager_identity.h"
+
+static int set_expected_size(const char *val, const struct kernel_param *kp)
+{
+    int rv = param_set_uint(val, kp);
+    ksu_set_manager_appid(ksu_debug_manager_appid);
+    pr_info("ksu_manager_appid set to %d\n", ksu_debug_manager_appid);
+    return rv;
+}
+
+static struct kernel_param_ops expected_size_ops = {
+    .set = set_expected_size,
+    .get = param_get_uint,
+};
+
+module_param_cb(ksu_debug_manager_appid, &expected_size_ops, &ksu_debug_manager_appid, S_IRUSR | S_IWUSR);
+
+#endif
+
+int get_pkg_from_apk_path(char *pkg, const char *path)
+{
+    int len = strlen(path);
+    if (len >= KSU_MAX_PACKAGE_NAME || len < 1)
+        return -1;
+
+    const char *last_slash = NULL;
+    const char *second_last_slash = NULL;
+
+    int i;
+    for (i = len - 1; i >= 0; i--) {
+        if (path[i] == '/') {
+            if (!last_slash) {
+                last_slash = &path[i];
+            } else {
+                second_last_slash = &path[i];
+                break;
+            }
+        }
+    }
+
+    if (!last_slash || !second_last_slash)
+        return -1;
+
+    const char *last_hyphen = strchr(second_last_slash, '-');
+    if (!last_hyphen || last_hyphen > last_slash)
+        return -1;
+
+    int pkg_len = last_hyphen - second_last_slash - 1;
+    if (pkg_len >= KSU_MAX_PACKAGE_NAME || pkg_len <= 0)
+        return -1;
+
+    // Copying the package name
+    strncpy(pkg, second_last_slash + 1, pkg_len);
+    pkg[pkg_len] = '\0';
+
+    return 0;
+}
+
+// /data/app/XXXXX/<PACKAGE_NAME>-YYY, which contains base.apk
+int get_pkg_from_apk_dir_path(char *pkg, const char *path)
+{
+    int len = strlen(path);
+    if (len >= KSU_MAX_PACKAGE_NAME || len < 1)
+        return -1;
+
+    const char *last_slash = strrchr(path, '/');
+    if (!last_slash)
+        return -1;
+
+    const char *last_hyphen = strchr(last_slash, '-');
+    if (!last_hyphen)
+        return -1;
+
+    int pkg_len = last_hyphen - last_slash - 1;
+    if (pkg_len >= KSU_MAX_PACKAGE_NAME || pkg_len <= 0)
+        return -1;
+
+    // Copying the package name
+    memcpy(pkg, last_slash + 1, pkg_len);
+    pkg[pkg_len] = '\0';
+
+    return 0;
+}
+
+bool is_manager_apk(char *path, u8 *signature_index)
+{
+    return check_v2_signature(path, signature_index);
+}
+''')
+    log.append(("R manager/apk_sign.c -> canonical multi-sig", True))
+else:
+    log.append(("R manager/apk_sign.c -> canonical multi-sig", False))
 
 p = ksu / "manager" / "apk_sign.h"
 t = read(p)
@@ -1521,7 +1976,7 @@ need("manager_identity.h", read(ksu / "manager" / "manager_identity.h"),
 need("throne_tracker.c", read(ksu / "manager" / "throne_tracker.c"),
      ["crown_manager", "ksu_handle_get_managers_cmd", "ksu_manager_appid_list"])
 need("apk_sign.c", read(ksu / "manager" / "apk_sign.c"),
-     ["manager_sign.h", "apk_sign_keys", "u8 *signature_index"])
+     ["manager_sign.h", "apk_sign_keys", "u8 *signature_index", "get_pkg_from_apk_path"])
 need("uapi/supercall.h", read(uapi_dir / "supercall.h"),
      ["ksu_get_full_version_cmd", "ksu_hook_type_cmd", "ksu_dynamic_manager_cmd",
       "ksu_get_managers_cmd", "ksu_get_kernel_patch_implement", "DYNAMIC_MANAGER_OP_SET"])
