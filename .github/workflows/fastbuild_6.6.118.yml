@@ -395,13 +395,15 @@ jobs:
           echo "CONFIG_TMPFS_XATTR=y" >> ./common/arch/arm64/configs/gki_defconfig
           echo "CONFIG_TMPFS_POSIX_ACL=y" >> ./common/arch/arm64/configs/gki_defconfig
           if [[ "${{ github.event.inputs.lz4kd_enable }}" == "true" ]]; then
-            echo "CONFIG_ZSMALLOC=y" >> ./common/arch/arm64/configs/gki_defconfig
+            # CONFIG_ZSMALLOC 保持 GKI 原生 =m 不覆盖：写 =y（内建）会与欧加真 vendor_dlkm 的
+            # oplus_bsp_zsmalloc.ko（OEM THP 变体）冲突（符号/CRC 不匹配拒载）→ OEM 内存管理链断 → 开机黑屏
+            # （run 45002432750/45005568950 两轮黑屏根因；能开机的 44999405910 zsmalloc=[M] 实锤差异）
             echo "CONFIG_CRYPTO_LZ4HC=y" >> ./common/arch/arm64/configs/gki_defconfig
             echo "CONFIG_CRYPTO_LZ4K=y" >> ./common/arch/arm64/configs/gki_defconfig
             echo "CONFIG_CRYPTO_LZ4KD=y" >> ./common/arch/arm64/configs/gki_defconfig
             echo "CONFIG_CRYPTO_842=y" >> ./common/arch/arm64/configs/gki_defconfig
             # lz4kd.patch 会把 zram 默认压缩器 choice 改成 LZ4KD——显式钉回 LZ4（保守默认），
-            # lz4k/lz4kd 仅注册为可选算法（run 45002432750 黑屏嫌疑：默认 lz4kd + oplus 用户态 ABI 不齐 → zram0 初始化即崩）
+            # lz4k/lz4kd 仅注册为可选算法（默认压缩器非黑屏根因，但保守默认更贴近原厂行为）
             echo "CONFIG_ZRAM_DEF_COMP_LZ4=y" >> ./common/arch/arm64/configs/gki_defconfig
           fi
           # 开启O2编译优化配置
