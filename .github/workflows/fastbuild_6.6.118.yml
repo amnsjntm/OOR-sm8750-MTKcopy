@@ -352,8 +352,16 @@ jobs:
           cp -r ../SukiSU_patch/other/zram/lz4k/include/linux/* ./include/linux/
           cp -r ../SukiSU_patch/other/zram/lz4k/lib/* ./lib
           cp -r ../SukiSU_patch/other/zram/lz4k/crypto/* ./crypto
-          cp ../SukiSU_patch/other/zram/zram_patch/${{ env.KERNEL_VERSION }}/lz4kd.patch ./
+          # 用仓库 stripped 版 lz4kd 补丁（已剥离 kernel/module/main.c hunk——其自定义模块黑名单
+          # 会拒载 OEM oplus_bsp_zsmalloc.ko，run 45002432750/45005568950 两轮黑屏根因）
+          wget -q https://github.com/$GITHUB_REPOSITORY/raw/refs/heads/$GITHUB_REF_NAME/other_patch/lz4kd_66_stripped.patch -O lz4kd.patch
           patch -p1 -F 3 < lz4kd.patch || true
+          # 残留校验：main.c 必须未被改动（fail-fast）
+          if ! git -C ../common diff --stat -- kernel/module/main.c 2>/dev/null | grep -q .; then
+            echo "[OK] kernel/module/main.c 未被 lz4kd 补丁触碰"
+          else
+            if [ -f ../common/kernel/module/main.c ]; then grep -q "custom_module_blacklist" ../common/kernel/module/main.c && { echo "[FATAL] main.c 黑名单残留"; exit 1; } || true; fi
+          fi
           
       - name: 添加SUSFS 配置项
         if: inputs.susfs_enable
@@ -694,26 +702,6 @@ jobs:
           cp ../common/out/arch/arm64/boot/Image ./Image
           # 拷贝本内核编译的 zram.ko 进包（供 zram_adaptive 等外部方案按需取用；不再自动替换）
           cp ../common/out/drivers/block/zram/zram.ko ./zram.ko
-          # 追加 zram_lkm 模块安装逻辑（与 kpn.zip 的 ksud 安装同构；镜像检查先行）
-          # 注：zram_adaptive(zram.zip) 已从包内移除（run 45002432750 教训：先装后测=检测恒真 + 双 zram 管理源打架）
-          # zram-lkm 只 insmod 算法模块不碰 zram 设备，与内核内置 LZ4KD 共存安全
-          if [ -f ./Image ]; then
-            {
-              echo ""
-              echo "if [ -f \"\$AKHOME/zram_lkm.zip\" ]; then"
-              echo "    MODULE_PATH=\"\$AKHOME/zram_lkm.zip\""
-              echo "    KSUD_PATH=\"/data/adb/ksud\""
-              echo "    if [ -f \"\$KSUD_PATH\" ]; then"
-              echo "        ui_print \"Installing ZRAM-LKM Module (lz4k/lz4kd/lz4k_oplus algo modules, v0.1.6)...\""
-              echo "        /data/adb/ksud module install \"\$MODULE_PATH\""
-              echo "        ui_print \"[i] 只加载算法不切换; 手动: echo lz4kd > /sys/block/zram0/comp_algorithm\""
-              echo "        ui_print \"Installation Complete!\""
-              echo "    else"
-              echo "        ui_print \"KSUD Not Found, skipping ZRAM-LKM installation...\""
-              echo "    fi"
-              echo "fi"
-            } >> ./anykernel.sh
-          fi
           if [[ ! -f ./Image ]]; then
             echo "未找到内核镜像文件，构建可能出错"
             exit 1
@@ -734,9 +722,6 @@ jobs:
           if [[ "$GITHUB_REF_NAME" != "main" && ( "${{ github.event.inputs.ksu_type }}" == "sukisu" || "${{ github.event.inputs.ksu_type }}" == "bakasu" ) ]]; then
             KSU_TYPENAME="KowSU"
           fi
-          # zram-lkm 预编译模块（misaka5202/zram-lkm v0.1.6, KMI=android15-6.6, 修复 lz4k_oplus 解压越界等坏块）：
-          # 与内核内 LZ4KD 补丁互补——内核补丁给 zram 注册 lz4k/lz4kd 算法；模块方案零内核改动、坏块修复随模块更新
-          wget -q https://github.com/misaka5202/zram-lkm/releases/download/v0.1.6/zram-lkm-v0.1.6-android15-6.6-arm64.zip -O ./zram_lkm.zip
           if [[ ${{ github.event.inputs.kpm_enable }} == 'true' ]]; then
             wget https://github.com/cctv18/KPatch-Next/releases/latest/download/kpn.zip
           fi
@@ -791,7 +776,7 @@ jobs:
           echo "KPM: ${{ github.event.inputs.kpm_enable }}" >> ./ak3.log
           echo "LZ4: ${{ github.event.inputs.lz4_enable }}" >> ./ak3.log
           echo "LZ4KD: ${{ github.event.inputs.lz4kd_enable }}" >> ./ak3.log
-          echo "zram-lkm: bundled (v0.1.6 android15-6.6, KMI prebuilt); zram_adaptive removed" >> ./ak3.log
+          echo "lz4kd: in-tree algo (lz4k/lz4kd/lz4k_oplus/842), default LZ4; no zram modules bundled" >> ./ak3.log
           echo "IPset: ${{ github.event.inputs.better_net }}" >> ./ak3.log
           echo "BBR&Brutal: ${{ github.event.inputs.bbr_enable }}" >> ./ak3.log
           echo "Droidspaces: ${{ github.event.inputs.droidspaces_enable }}" >> ./ak3.log
