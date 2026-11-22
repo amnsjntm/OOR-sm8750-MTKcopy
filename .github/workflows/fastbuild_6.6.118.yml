@@ -341,9 +341,7 @@ jobs:
           wget -q https://github.com/$GITHUB_REPOSITORY/raw/refs/heads/$GITHUB_REF_NAME/other_patch/fix_uapi_hook_type_stage3.py
           python3 fix_hook_type_stage3.py
           python3 fix_uapi_hook_type_stage3.py
-          # 回到 manager 目录继续
-          cd common/drivers/kernelsu/manager
-
+          # 不回程 manager 目录（symlink 逻辑路径回程在 runner bash 不可靠，两轮实证）；后续 step 各自 cd kernel_workspace
           echo "CANON 替换完成并校验通过（含 stage3 钩子类型）"
 
       - name: 应用lz4 1.10.0 & zstd 1.5.7补丁
