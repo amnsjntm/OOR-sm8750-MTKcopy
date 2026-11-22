@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-fix_manager_compat_kowsu.py v7 — port BakaSU multi-manager recognition + extra ioctls
+fix_manager_compat_kowsu.py v7.2 — port BakaSU multi-manager recognition + extra ioctls
 into KowSU(master) driver. Run AFTER 10_enable patch + fix_bridge_kowsu_v6.py.
+v7.2: task_work.h in compat header (CI 44989320080 fix); dispatch handlers anchored
+before the mapping-table comment (was: injected inside the array initializer);
+uapi adds the 6 KSU_IOCTL_* consts KowSU lacks; extern decl for
+ksu_handle_get_managers_cmd; compat helpers are static inline (multi-TU safe).
 Idempotent; residue-verified; exit 1 on any inconsistency.
 """
 import sys, re
@@ -89,6 +93,10 @@ if newfile:
 #include <linux/sched.h>
 #include <linux/pid.h>
 #include <linux/slab.h>
+#include <linux/task_work.h>
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 11, 0)
+#include <linux/sched/task.h> /* put_task_struct */
+#endif
 #include <linux/uaccess.h>
 #include <klog.h>
 #include "util.h" /* ksu_filp_open_nonotify */
@@ -115,7 +123,13 @@ static void ksu_task_work_dispatcher(struct callback_head *cb)
     kfree(tw);
 }
 
-void ksu_run_in_init_if_possible(void (*callback)(void *), void *data)
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 7, 0)
+#ifndef TWA_RESUME
+#define TWA_RESUME true
+#endif
+#endif
+
+static inline void ksu_run_in_init_if_possible(void (*callback)(void *), void *data)
 {
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 5, 0)
     struct task_struct *tsk;
@@ -148,7 +162,7 @@ void ksu_run_in_init_if_possible(void (*callback)(void *), void *data)
 #endif
 }
 
-ssize_t ksu_kernel_read_compat(struct file *p, void *buf, size_t count, loff_t *pos)
+static inline ssize_t ksu_kernel_read_compat(struct file *p, void *buf, size_t count, loff_t *pos)  /* static inline: header-defined, multi-TU */
 {
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 14, 0) || defined(KSU_OPTIONAL_KERNEL_READ)
     return kernel_read(p, buf, count, pos);
@@ -1721,8 +1735,18 @@ if "signature_index" not in t:
 p = uapi_dir / "supercall.h"
 t = read(p)
 if "ksu_get_managers_cmd" not in t:
-    t += "\n" + r'''
+    # insert BEFORE the closing #endif so a second #include skips it via the guard
+    ei = t.rfind("#endif")
+    if ei < 0:
+        die("uapi/supercall.h: no #endif found")
+    t = t[:ei] + r'''
 /* ---- manager compat additions (ported from Baka-SU/BakaSU) ---- */
+#define KSU_IOCTL_MANAGE_TRY_UMOUNT KSU_IOCTL_ADD_TRY_UMOUNT /* alias: same slot K,18 */
+#define KSU_IOCTL_GET_FULL_VERSION _IOC(_IOC_READ, 'K', 100, 0)
+#define KSU_IOCTL_HOOK_TYPE _IOC(_IOC_READ, 'K', 101, 0)
+#define KSU_IOCTL_DYNAMIC_MANAGER _IOC(_IOC_READ | _IOC_WRITE, 'K', 103, 0)
+#define KSU_IOCTL_GET_MANAGERS _IOC(_IOC_READ | _IOC_WRITE, 'K', 105, 0)
+#define KSU_IOCTL_GET_KERNEL_PATCH_IMPLEMENT _IOC(_IOC_READ, 'K', 106, 0)
 #define KSU_FULL_VERSION_STRING 255
 #define DYNAMIC_MANAGER_OP_SET 0
 #define DYNAMIC_MANAGER_OP_GET 1
@@ -1762,7 +1786,7 @@ struct ksu_get_kernel_patch_implement {
 #define KERNEL_PATCH_ORIGINAL 1
 #define KERNEL_PATCH_KPN 2
 #define KERNEL_PATCH_SUKISU 3
-'''
+''' + t[ei:]
     write(p, t)
     log.append(("P uapi/supercall.h (+6 structs/consts)", True))
 else:
@@ -1773,7 +1797,9 @@ p = ksu / "supercall" / "dispatch.c"
 t = read(p)
 changed = False
 if "do_get_full_version" not in t:
-    m = re.search(r"\{\s*\n\s*\.cmd = KSU_IOCTL_GRANT_ROOT", t)
+    m = re.search(r"// IOCTL handlers mapping table", t)
+    if not m:
+        die("dispatch.c: anchor '// IOCTL handlers mapping table' not found")
     i = m.start()
     t = t[:i] + r'''
 /* ---- manager compat handlers (ported from Baka-SU/BakaSU) ---- */
@@ -1848,6 +1874,8 @@ static int do_dynamic_manager(void __user *arg)
 #endif
 }
 
+extern int ksu_handle_get_managers_cmd(struct ksu_get_managers_cmd __user *arg, struct ksu_get_managers_cmd *cmd); /* defined in manager/throne_tracker.c */
+
 static int do_get_managers(void __user *arg)
 {
     struct ksu_get_managers_cmd cmd;
@@ -1891,6 +1919,8 @@ static int do_get_kernel_patch_implement(void __user *arg)
     changed = True
 if "KSU_IOCTL_GET_FULL_VERSION," not in t:
     m = re.search(r"\{\s*\n\s*\.cmd = KSU_IOCTL_GRANT_ROOT", t)
+    if not m:
+        die("dispatch.c: GRANT_ROOT row anchor not found")
     i = m.start()
     t = t[:i] + r'''
     {
